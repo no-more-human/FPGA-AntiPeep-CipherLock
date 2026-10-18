@@ -1,0 +1,25 @@
+# ==============================================================================
+# 智能保险箱上位机 Python 依赖清单 (Requirements)
+# Python 建议版本: >= 3.9, <= 3.12
+# ==============================================================================
+
+# --- 1. 串口与通信中枢 (Day 1 核心) ---
+pyserial>=3.5
+
+# --- 2. 图像处理与计算机视觉 ---
+opencv-python>=4.8.0.76
+
+# --- 3. 深度学习与 Edge AI 目标检测 ---
+# 注意: 如果有 NVIDIA GPU，建议先按照 PyTorch 官网安装对应 CUDA 版本的 torch/torchvision:
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+torch>=2.0.0
+torchvision>=0.15.0
+ultralytics>=8.0.0
+
+# --- 4. 上位机图形用户界面 (GUI) ---
+PyQt6>=6.5.0
+
+# --- 5. 工具库与日志增强 ---
+numpy>=1.24.0
+colorama>=0.4.6
+openpyxl>=3.1.2

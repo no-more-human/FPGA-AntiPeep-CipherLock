@@ -1,0 +1,43 @@
+{
+  // ===== 本项目工作区设置（FPGA 竞赛：安路 EG4S20）=====
+
+  // --- Markdown / plan.md 阅读体验 ---
+  "markdown.preview.breaks": true,
+  "markdown.preview.linkify": true,
+  "editor.wordWrap": "on",
+
+  // --- Verilog / HDL 编写（队友 FPGA 侧）---
+  "files.associations": {
+    "*.v": "verilog",
+    "*.sv": "systemverilog",
+    "*.vhd": "vhdl",
+    "*.vh": "verilog",
+    "*.svh": "systemverilog",
+    "*.sdc": "tcl"
+  },
+  // 安路 Tang Dynasty 原语库位置（写代码时可自动补全 AL_MAP / OR2 等原语）
+  "verilog.linting.linter": "none",
+  "verilog.includeIndexing": [
+    "${workspaceFolder}/**/*.v",
+    "${workspaceFolder}/**/*.sv",
+    "D:/TD/ip/**/*.v",
+    "D:/TD/lib/**/*.v"
+  ],
+
+  // --- Python 上位机（PC 侧 YOLOv8 / PySerial）---
+  "python.analysis.typeCheckingMode": "basic",
+  "python.analysis.autoImportCompletions": true,
+
+  // --- 编辑器通用 ---
+  "editor.formatOnSave": false,
+  "files.eol": "\r\n",
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+
+  // --- 资源管理器默认折叠的目录 ---
+  "explorer.excludeGitIgnore": false,
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.DS_Store": true
+  }
+}

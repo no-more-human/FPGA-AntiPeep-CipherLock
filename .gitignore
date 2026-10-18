@@ -1,0 +1,83 @@
+# ==============================================================================
+# Git Ignore for FPGA & Python Edge-AI Project
+# ==============================================================================
+
+# --- Anlogic Tang Dynasty (TD) Intermediate & Output Files ---
+*.db
+*.hdb
+*.rdb
+*.adb
+*.log
+td_*.log
+debug.log
+*.area
+*.timing
+*.pin
+*.place
+*.route
+*.snr
+*.rpt
+*.summary
+*.gate.v
+*.gate.sdf
+*.v_snr
+*.prg
+*.svf
+*.bin
+al_ip/
+gate/
+sim_netlist/
+runs/
+*_Runs/
+*Runs/
+*.run
+.recovery/
+
+# --- Python & Edge-AI Artifacts ---
+__pycache__/
+*.py[cod]
+*$py.class
+parsetab.py
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+runs/detect/
+*.pt
+*.onnx
+
+# --- Simulation Artifacts (ModelSim, Icarus, Vivado) ---
+*.vcd
+*.fsdb
+*.wlf
+work/
+transcript
+vsim.wlf
+
+# --- System & OS Artifacts ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# --- IDE Config (keep workspace settings, ignore personal temporary data) ---
+.vscode/*.log
+.idea/

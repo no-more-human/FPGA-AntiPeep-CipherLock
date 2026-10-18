@@ -1,0 +1,33 @@
+##============================================================
+## 保险箱密码锁 引脚约束（Anlogic Design Constraint）
+## 依据：EG4S20引脚速查表.xlsx
+## Day 2: 50MHz时钟、硬件复位按键、8个板载LED、4x4矩阵键盘(板载/外接)
+##============================================================
+
+## 50MHz 系统主时钟
+set_pin_assignment	{ clk_50M }	{ LOCATION = R7; IOSTANDARD = LVCMOS33; }
+
+## 独立复位按键（KEY1/RST，低电平有效，加内部弱上拉保护）
+set_pin_assignment	{ rst_n }	{ LOCATION = E3; IOSTANDARD = LVCMOS33; PULLTYPE = PULLUP; }
+
+## 8 个板载 LED（高电平点亮）
+set_pin_assignment	{ led[0] }	{ LOCATION = B14; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
+set_pin_assignment	{ led[1] }	{ LOCATION = B15; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
+set_pin_assignment	{ led[2] }	{ LOCATION = B16; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
+set_pin_assignment	{ led[3] }	{ LOCATION = C15; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
+set_pin_assignment	{ led[4] }	{ LOCATION = C16; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
+set_pin_assignment	{ led[5] }	{ LOCATION = E13; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
+set_pin_assignment	{ led[6] }	{ LOCATION = E16; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
+set_pin_assignment	{ led[7] }	{ LOCATION = F16; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
+
+## 4x4 矩阵键盘行输入（Row 0~3，按键按下为低电平，必须配置内部上拉 PULLUP）
+set_pin_assignment	{ key_row[0] }	{ LOCATION = E10; IOSTANDARD = LVCMOS33; PULLTYPE = PULLUP; }
+set_pin_assignment	{ key_row[1] }	{ LOCATION = C10; IOSTANDARD = LVCMOS33; PULLTYPE = PULLUP; }
+set_pin_assignment	{ key_row[2] }	{ LOCATION = F9;  IOSTANDARD = LVCMOS33; PULLTYPE = PULLUP; }
+set_pin_assignment	{ key_row[3] }	{ LOCATION = D9;  IOSTANDARD = LVCMOS33; PULLTYPE = PULLUP; }
+
+## 4x4 矩阵键盘列扫描输出（Col 0~3，轮流输出低电平）
+set_pin_assignment	{ key_col[0] }	{ LOCATION = E11; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
+set_pin_assignment	{ key_col[1] }	{ LOCATION = D11; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
+set_pin_assignment	{ key_col[2] }	{ LOCATION = C11; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
+set_pin_assignment	{ key_col[3] }	{ LOCATION = F10; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
