@@ -73,7 +73,10 @@ flowchart LR
     end
 
     subgraph FPGA_Side ["FPGA 下位机 (国产安路 EG4S20BG256)"]
-        FPGA_UART["UART 控制器 (115200 8-N-1)"] <--> MainFSM["保险箱主控制状态机 (FSM)"]
+        FPGA_UART["UART 控制器 (115200 8-N-1)"]
+        MainFSM["保险箱主控制状态机 (FSM)"]
+        
+        FPGA_UART <--> MainFSM
         
         Keypad["4x4 矩阵薄膜键盘"] --> MainFSM
         Door_Sensor["门磁检测微动开关 (SW1)"] --> MainFSM
@@ -87,7 +90,7 @@ flowchart LR
         MainFSM --> PWM_Servo["SG90 舵机 PWM 控制 (物理锁舌)"]
     end
 
-    PY_UART <-->|USB 转 TTL 串口线 (115200bps)| FPGA_UART
+    PY_UART <-->|"USB 转 TTL 串口线 (115200bps)"| FPGA_UART
 ```
 
 ### 2. 视觉防窥与联动时序逻辑
