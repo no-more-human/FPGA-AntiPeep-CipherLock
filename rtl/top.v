@@ -29,6 +29,9 @@ module top(
     // 板载无源蜂鸣器接口
     output wire       buzzer_out,  // 驱动板载蜂鸣器 (引脚: H11)
     
+    // SG90 舵机 50Hz PWM 控制接口 (Day 6 任务)
+    output wire       servo_pwm,   // 驱动舵机旋转 (引脚: F14)
+    
     // JQ8900-16P 真人语音播报模块接口 (Day 5 任务)
     output wire       voice_tx,    // 单线串口 One-Line 驱动 (引脚: H16)
     input  wire       voice_busy,  // 语音模块 BUSY 状态 (引脚: G16, 内部 PULLUP)
@@ -92,14 +95,15 @@ keypad_scan #(
 );
 
 // --------------------------------------------------------------------------
-// 3. 保险箱主业务状态机 (Day 4: 密码比对、连续输错3次锁定60秒)
+// 3. 保险箱主业务状态机 (Day 6: 动态密码、A键录入、B键改密、C键提前闭锁)
 // --------------------------------------------------------------------------
-wire [2:0] state_code;
+wire [3:0] state_code;
 wire [2:0] pwd_len;
 wire [1:0] err_count;
 wire [6:0] lock_countdown;
 wire       unlock_en;
 wire       duress_alarm;
+wire       pwd_changed;
 wire       beep_key;
 wire       beep_err;
 wire       beep_lock;
@@ -108,7 +112,8 @@ wire       beep_succ;
 safe_fsm #(
     .DEFAULT_PWD       ({4'h1, 4'h2, 4'h3, 4'h4, 4'h5, 4'h6}), // 预设密码: 123456
     .DURESS_PWD        ({4'h6, 4'h5, 4'h4, 4'h3, 4'h2, 4'h1}), // 反挟持密码: 654321
-    .LOCK_TIMEOUT_SEC  (60)                                   // 锁定 60 秒
+    .LOCK_TIMEOUT_SEC  (60),                                  // 锁定 60 秒
+    .OP_TIMEOUT_SEC    (15)                                   // 15 秒无操作看门狗
 )(
     .clk           (clk_50M),
     .rst_n         (rst_sync_n),
@@ -122,10 +127,26 @@ safe_fsm #(
     .lock_countdown(lock_countdown),
     .unlock_en     (unlock_en),
     .duress_alarm  (duress_alarm),
+    .pwd_changed   (pwd_changed),
     .beep_key      (beep_key),
     .beep_err      (beep_err),
     .beep_lock     (beep_lock),
     .beep_succ     (beep_succ)
+);
+
+// --------------------------------------------------------------------------
+// 3.1 SG90 舵机 50Hz PWM 控制驱动 (Day 6 任务)
+// --------------------------------------------------------------------------
+servo_driver #(
+    .CLK_FREQ    (50_000_000),
+    .PERIOD_CNT  (1_000_000), // 20ms 基准周期
+    .PULSE_0_DEG (25_000),    // 0.5ms: 0度闭锁
+    .PULSE_90_DEG(75_000)     // 1.5ms: 90度开锁
+)(
+    .clk      (clk_50M),
+    .rst_n    (rst_sync_n),
+    .unlock_en(unlock_en),
+    .servo_pwm(servo_pwm)
 );
 
 // --------------------------------------------------------------------------
@@ -180,6 +201,10 @@ always @(posedge clk_50M or negedge rst_sync_n) begin
             // Track 2: 开锁成功 ("门已开 / 欢迎使用")
             voice_play_en   <= 1'b1;
             voice_track_num <= 8'h02;
+        end else if (pwd_changed) begin
+            // Track 5: 密码修改/录入成功 ("修改成功")
+            voice_play_en   <= 1'b1;
+            voice_track_num <= 8'h05;
         end else if (door_alert_pulse) begin
             // Track 6: 门磁超时报警 ("门未关严，请关门")
             voice_play_en   <= 1'b1;
@@ -192,7 +217,7 @@ always @(posedge clk_50M or negedge rst_sync_n) begin
             // Track 3: 密码输入错误 ("密码错误")
             voice_play_en   <= 1'b1;
             voice_track_num <= 8'h03;
-        end else if (key_valid && (state_code == 3'd0) && (key_val <= 4'h9)) begin
+        end else if (key_valid && (state_code == 4'd0) && (key_val <= 4'h9)) begin
             // Track 1: 敲击首位输入唤醒 ("请输入密码")
             voice_play_en   <= 1'b1;
             voice_track_num <= 8'h01;
@@ -298,8 +323,8 @@ end
 assign led[0] = hb_led;
 assign led[1] = key_pressed;
 assign led[2] = unlock_en;
-assign led[3] = (state_code == 3'd4);
-assign led[4] = (state_code == 3'd3);
+assign led[3] = (state_code == 4'd4);
+assign led[4] = (state_code == 4'd3);
 assign led[5] = door_open;
 assign led[6] = (err_count >= 2'd1);
 assign led[7] = (err_count >= 2'd2) | door_alert;

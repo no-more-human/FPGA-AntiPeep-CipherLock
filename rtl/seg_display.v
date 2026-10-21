@@ -15,8 +15,8 @@ module seg_display(
     input  wire       rst_n,           // 异步复位 (低有效)
     input  wire       tick_1k,         // 1kHz (1ms) 系统节拍，用作位选扫描时钟
     
-    // 状态接口输入 (来自主状态机)
-    input  wire [2:0] state_code,      // 0:IDLE, 1:INPUT, 2:SUCCESS, 3:ERROR, 4:LOCKED, 5:PEEP
+    // 状态接口输入 (来自主状态机, 扩充为 4 位)
+    input  wire [3:0] state_code,      // 0:IDLE, 1:INPUT, 2:SUCCESS, 3:ERROR, 4:LOCKED, 5~10:SET/CHG
     input  wire [2:0] pwd_len,         // 当前已输入密码长度 (0~6)
     input  wire [1:0] err_count,       // 输错次数 (0~3)
     input  wire [6:0] lock_countdown,  // 锁定剩余倒计时秒数 (0~60)
@@ -50,6 +50,12 @@ localparam SEG_O    = 8'h3F; // O
 localparam SEG_P    = 8'h73; // P
 localparam SEG_n    = 8'h54; // n
 localparam SEG_r    = 8'h50; // r
+localparam SEG_S    = 8'h6D; // S
+localparam SEG_t    = 8'h78; // t
+localparam SEG_C    = 8'h39; // C
+localparam SEG_A    = 8'h77; // A
+localparam SEG_u    = 8'h1C; // u
+localparam SEG_F    = 8'h71; // F
 
 // 数字转段码函数
 function [7:0] digit_to_seg(input [3:0] num);
@@ -89,46 +95,81 @@ wire [3:0] lock_ones     = lock_ones_7b[3:0];
 
 always @(*) begin
     case (state_code)
-        3'd0: begin // IDLE: 显示 "IdLE"
+        4'd0: begin // IDLE: 显示 "IdLE"
             seg_buf3 = SEG_I;
             seg_buf2 = SEG_d;
             seg_buf1 = SEG_L;
             seg_buf0 = SEG_E;
         end
         
-        3'd1: begin // INPUT: 显示 "P- n" (P, -, 空白, 当前已输入位数 0~6)
+        4'd1: begin // INPUT: 显示 "P- n" (P, -, 空白, 当前已输入位数 0~6)
             seg_buf3 = SEG_P;
             seg_buf2 = SEG_DASH;
             seg_buf1 = SEG_BLANK;
             seg_buf0 = digit_to_seg({1'b0, pwd_len});
         end
         
-        3'd2: begin // SUCCESS: 显示 "OPEn"
+        4'd2: begin // SUCCESS: 显示 "OPEn"
             seg_buf3 = SEG_O;
             seg_buf2 = SEG_P;
             seg_buf1 = SEG_E;
             seg_buf0 = SEG_n;
         end
         
-        3'd3: begin // ERROR: 显示 "Err1" / "Err2" / "Err3"
+        4'd3: begin // ERROR: 显示 "Err1" / "Err2" / "Err3"
             seg_buf3 = SEG_E;
             seg_buf2 = SEG_r;
             seg_buf1 = SEG_r;
             seg_buf0 = digit_to_seg({2'b00, err_count});
         end
         
-        3'd4: begin // LOCKED: 显示 "L-xx" (例如 "L-60", "L-59" ... "L-01")
+        4'd4: begin // LOCKED: 显示 "L-xx" (例如 "L-60", "L-59" ... "L-01")
             seg_buf3 = SEG_L;
             seg_buf2 = SEG_DASH;
             seg_buf1 = digit_to_seg(lock_tens);
             seg_buf0 = digit_to_seg(lock_ones);
         end
         
-        3'd5: begin // PEEP: 显示 "PEEP" (防窥挂起预留)
-            seg_buf3 = SEG_P;
+        4'd5: begin // S_SET_NEW: 显示 "SEt n" (A键首次录入新密码)
+            seg_buf3 = SEG_S;
             seg_buf2 = SEG_E;
-            seg_buf1 = SEG_E;
-            seg_buf0 = SEG_P;
+            seg_buf1 = SEG_t;
+            seg_buf0 = digit_to_seg({1'b0, pwd_len});
+        end
+
+        4'd6: begin // S_SET_CFM: 显示 "CFn n" (A键确认新密码)
+            seg_buf3 = SEG_C;
+            seg_buf2 = SEG_F;
+            seg_buf1 = SEG_n;
+            seg_buf0 = digit_to_seg({1'b0, pwd_len});
+        end
+
+        4'd7: begin // S_CHG_AUTH: 显示 "Aut n" (B键验旧密码)
+            seg_buf3 = SEG_A;
+            seg_buf2 = SEG_u;
+            seg_buf1 = SEG_t;
+            seg_buf0 = digit_to_seg({1'b0, pwd_len});
+        end
+
+        4'd8: begin // S_CHG_NEW: 显示 "nE- n" (B键输入新密码)
+            seg_buf3 = SEG_n;
+            seg_buf2 = SEG_E;
+            seg_buf1 = SEG_DASH;
+            seg_buf0 = digit_to_seg({1'b0, pwd_len});
+        end
+
+        4'd9: begin // S_CHG_CFM: 显示 "CF- n" (B键确认新密码)
+            seg_buf3 = SEG_C;
+            seg_buf2 = SEG_F;
+            seg_buf1 = SEG_DASH;
+            seg_buf0 = digit_to_seg({1'b0, pwd_len});
+        end
+
+        4'd10: begin // S_OP_DONE: 显示 "PASS" (设置/修改完成)
+            seg_buf3 = SEG_P;
+            seg_buf2 = SEG_A;
+            seg_buf1 = SEG_S;
+            seg_buf0 = SEG_S;
         end
         
         default: begin

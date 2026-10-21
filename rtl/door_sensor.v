@@ -75,10 +75,15 @@ always @(posedge clk or negedge rst_n) begin
 end
 
 // --------------------------------------------------------------------------
-// 3. 开锁后 15 秒超时未关门计时与报警逻辑
+// 3. 开锁后 15 秒超时未关门计时与报警逻辑 (3段状态机: 解决开锁延迟拉门失效隐患)
 // --------------------------------------------------------------------------
-reg [9:0] ms_cnt; // 0~999 毫秒计数器
-reg       armed;  // 是否处于"曾经开锁/正在监控关门"的安防就绪状态
+localparam ST_DOOR_IDLE   = 2'd0; // 待机门闭，未布防
+localparam ST_DOOR_WAIT   = 2'd1; // 已开锁，等待拉开门 (带 30s 未拉门超时撤防)
+localparam ST_DOOR_OPENED = 2'd2; // 门已拉开，15s 未关门超时监控中
+
+reg [1:0]  door_state;
+reg [9:0]  ms_cnt;       // 0~999 毫秒计数器
+reg [4:0]  wait_sec_cnt; // 0~30s 等待拉门超时
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -86,41 +91,81 @@ always @(posedge clk or negedge rst_n) begin
         alert_pulse  <= 1'b0;
         open_sec_cnt <= 4'd0;
         ms_cnt       <= 10'd0;
-        armed        <= 1'b0;
+        wait_sec_cnt <= 5'd0;
+        door_state   <= ST_DOOR_IDLE;
     end else begin
         alert_pulse <= 1'b0; // 默认清除单周期脉冲
 
-        // 当系统产生开锁事件时，布防使能
-        if (unlock_en) begin
-            armed <= 1'b1;
-        end
-
-        // 门磁判决逻辑: 只要门关严 (door_open == 0)，立即秒级撤防并清空报警！
-        if (!door_open) begin
-            door_alert   <= 1'b0;
-            open_sec_cnt <= 4'd0;
-            ms_cnt       <= 10'd0;
-            if (!unlock_en) begin
-                armed <= 1'b0; // 门已关严且不在开锁脉冲内，彻底撤销监控
-            end
-        end else begin
-            // 门处于敞开状态 (door_open == 1)
-            if (armed && tick_1k) begin
-                if (ms_cnt >= 10'd999) begin
-                    ms_cnt <= 10'd0;
-                    if (open_sec_cnt < TIMEOUT_SEC) begin
-                        open_sec_cnt <= open_sec_cnt + 4'd1;
-                        if (open_sec_cnt + 4'd1 >= TIMEOUT_SEC) begin
-                            // 达到 15 秒未关门门限，触发警报！
-                            door_alert  <= 1'b1;
-                            alert_pulse <= 1'b1;
-                        end
+        case (door_state)
+            ST_DOOR_IDLE: begin
+                door_alert   <= 1'b0;
+                open_sec_cnt <= 4'd0;
+                ms_cnt       <= 10'd0;
+                wait_sec_cnt <= 5'd0;
+                if (unlock_en) begin
+                    // 开锁触发布防
+                    if (door_open) begin
+                        door_state <= ST_DOOR_OPENED;
+                    end else begin
+                        door_state <= ST_DOOR_WAIT;
                     end
-                end else begin
-                    ms_cnt <= ms_cnt + 10'd1;
                 end
             end
-        end
+
+            ST_DOOR_WAIT: begin
+                // 开锁后等待用户拉开箱门
+                if (door_open) begin
+                    // 用户拉开箱门，进入敞开超时监控
+                    ms_cnt       <= 10'd0;
+                    open_sec_cnt <= 4'd0;
+                    door_state   <= ST_DOOR_OPENED;
+                end else if (tick_1k) begin
+                    if (ms_cnt >= 10'd999) begin
+                        ms_cnt <= 10'd0;
+                        if (wait_sec_cnt >= 5'd30) begin
+                            // 30秒内从未拉门且锁已回弹，平稳退回 IDLE
+                            if (!unlock_en) begin
+                                door_state <= ST_DOOR_IDLE;
+                            end
+                        end else begin
+                            wait_sec_cnt <= wait_sec_cnt + 5'd1;
+                        end
+                    end else begin
+                        ms_cnt <= ms_cnt + 10'd1;
+                    end
+                end
+            end
+
+            ST_DOOR_OPENED: begin
+                // 门已拉开，开始进行 15 秒超时报警计时
+                if (!door_open) begin
+                    // 门一旦关严吸合，秒级解除警报并撤防！
+                    door_alert   <= 1'b0;
+                    open_sec_cnt <= 4'd0;
+                    ms_cnt       <= 10'd0;
+                    if (!unlock_en) begin
+                        door_state <= ST_DOOR_IDLE;
+                    end else begin
+                        door_state <= ST_DOOR_WAIT;
+                    end
+                end else if (tick_1k) begin
+                    if (ms_cnt >= 10'd999) begin
+                        ms_cnt <= 10'd0;
+                        if (open_sec_cnt < TIMEOUT_SEC) begin
+                            open_sec_cnt <= open_sec_cnt + 4'd1;
+                            if (open_sec_cnt + 4'd1 >= TIMEOUT_SEC) begin
+                                door_alert  <= 1'b1;
+                                alert_pulse <= 1'b1;
+                            end
+                        end
+                    end else begin
+                        ms_cnt <= ms_cnt + 10'd1;
+                    end
+                end
+            end
+
+            default: door_state <= ST_DOOR_IDLE;
+        endcase
     end
 end
 

@@ -18,6 +18,7 @@ module tb_top;
     wire [7:0] seg_out;
     wire [3:0] seg_cs;
     wire       buzzer_out;
+    wire       servo_pwm;
     wire       voice_tx;
     reg        voice_busy;
     reg        door_gpio;
@@ -37,6 +38,7 @@ module tb_top;
         .seg_out   (seg_out),
         .seg_cs    (seg_cs),
         .buzzer_out(buzzer_out),
+        .servo_pwm (servo_pwm),
         .voice_tx  (voice_tx),
         .voice_busy(voice_busy),
         .door_gpio (door_gpio),

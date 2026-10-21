@@ -16,8 +16,8 @@ module oled_driver #(
     input  wire        clk,            // 50MHz 系统主时钟
     input  wire        rst_n,          // 异步复位 (低有效)
     
-    // 业务状态输入 (来自主状态机)
-    input  wire [2:0]  state_code,     // 0:IDLE, 1:INPUT, 2:SUCCESS, 3:ERROR, 4:LOCKED
+    // 业务状态输入 (来自主状态机, 扩充为 4 位)
+    input  wire [3:0]  state_code,     // 0:IDLE, 1:INPUT, 2:SUCCESS, 3:ERROR, 4:LOCKED, 5~10:SET/CHG
     input  wire [2:0]  pwd_len,        // 已输入密码位数 (0~6)
     input  wire [1:0]  err_count,      // 累计输错次数 (0~3)
     input  wire [6:0]  lock_countdown, // 锁定倒计时剩余秒数 (0~60)
@@ -297,34 +297,98 @@ always @(*) begin
 
     case (current_page)
         // ------------------------------------------------------------------
-        // Row 0 (Page 0~1): 标题栏居中显示 "欢迎使用" (64点宽, 居中: 32~95)
+        // Row 0 (Page 0~1): 标题栏居中显示
         // ------------------------------------------------------------------
         3'd0, 3'd1: begin
-            if (current_col >= 7'd32 && current_col < 7'd96) begin
-                font_cn_byte = {current_page[0], current_col[3:0]};
-                case (current_col[5:4])
-                    2'b10: font_cn_code = 6'd0; // "欢" (32~47)
-                    2'b11: font_cn_code = 6'd1; // "迎" (48~63)
-                    2'b00: font_cn_code = 6'd2; // "使" (64~79)
-                    2'b01: font_cn_code = 6'd3; // "用" (80~95)
-                endcase
-                pixel_out = font_cn_pixel;
-            end else begin
-                pixel_out = 8'h00;
-            end
+            font_cn_byte = {current_page[0], current_col[3:0]};
+            case (state_code)
+                4'd5: begin // S_SET_NEW: "新用户录入" (24~103)
+                    if (current_col >= 7'd24 && current_col < 7'd104) begin
+                        case ((current_col - 7'd24) >> 4)
+                            0: font_cn_code = 6'd30; // 新
+                            1: font_cn_code = 6'd3;  // 用
+                            2: font_cn_code = 6'd35; // 户
+                            3: font_cn_code = 6'd36; // 录
+                            4: font_cn_code = 6'd6;  // 入
+                            default: font_cn_code = 6'd30;
+                        endcase
+                        pixel_out = font_cn_pixel;
+                    end
+                end
+
+                4'd6, 4'd9: begin // S_SET_CFM / S_CHG_CFM: "请再次确认" (24~103)
+                    if (current_col >= 7'd24 && current_col < 7'd104) begin
+                        case ((current_col - 7'd24) >> 4)
+                            0: font_cn_code = 6'd4;  // 请
+                            1: font_cn_code = 6'd37; // 再
+                            2: font_cn_code = 6'd25; // 次
+                            3: font_cn_code = 6'd26; // 确
+                            4: font_cn_code = 6'd27; // 认
+                            default: font_cn_code = 6'd4;
+                        endcase
+                        pixel_out = font_cn_pixel;
+                    end
+                end
+
+                4'd7: begin // S_CHG_AUTH: "修改密码" (32~95)
+                    if (current_col >= 7'd32 && current_col < 7'd96) begin
+                        case (current_col[5:4])
+                            2'b10: font_cn_code = 6'd40; // 修
+                            2'b11: font_cn_code = 6'd32; // 改
+                            2'b00: font_cn_code = 6'd7;  // 密
+                            2'b01: font_cn_code = 6'd8;  // 码
+                        endcase
+                        pixel_out = font_cn_pixel;
+                    end
+                end
+
+                4'd8: begin // S_CHG_NEW: "输入新密码" (24~103)
+                    if (current_col >= 7'd24 && current_col < 7'd104) begin
+                        case ((current_col - 7'd24) >> 4)
+                            0: font_cn_code = 6'd5;  // 输
+                            1: font_cn_code = 6'd6;  // 入
+                            2: font_cn_code = 6'd30; // 新
+                            3: font_cn_code = 6'd7;  // 密
+                            4: font_cn_code = 6'd8;  // 码
+                            default: font_cn_code = 6'd5;
+                        endcase
+                        pixel_out = font_cn_pixel;
+                    end
+                end
+
+                4'd10: begin // S_OP_DONE: "设置成功" (32~95)
+                    if (current_col >= 7'd32 && current_col < 7'd96) begin
+                        case (current_col[5:4])
+                            2'b10: font_cn_code = 6'd33; // 设
+                            2'b11: font_cn_code = 6'd34; // 置
+                            2'b00: font_cn_code = 6'd11; // 成
+                            2'b01: font_cn_code = 6'd12; // 功
+                        endcase
+                        pixel_out = font_cn_pixel;
+                    end
+                end
+
+                default: begin // 常规状态: "欢迎使用" (32~95)
+                    if (current_col >= 7'd32 && current_col < 7'd96) begin
+                        case (current_col[5:4])
+                            2'b10: font_cn_code = 6'd0; // 欢
+                            2'b11: font_cn_code = 6'd1; // 迎
+                            2'b00: font_cn_code = 6'd2; // 使
+                            2'b01: font_cn_code = 6'd3; // 用
+                        endcase
+                        pixel_out = font_cn_pixel;
+                    end
+                end
+            endcase
         end
 
         // ------------------------------------------------------------------
         // Row 1 (Page 2~3): 状态提示行
-        // 待机/输入: "请输入密码" (24~103)
-        // 成功:     "  开锁成功  " (32~95)
-        // 错误:     "  密码错误  " (32~95)
-        // 锁定:     " 系统已锁定 " (24~103)
         // ------------------------------------------------------------------
         3'd2, 3'd3: begin
             font_cn_byte = {current_page[0], current_col[3:0]};
             case (state_code)
-                3'd2: begin // 成功: "开锁成功" (32~95)
+                4'd2: begin // 成功: "开锁成功" (32~95)
                     if (current_col >= 7'd32 && current_col < 7'd96) begin
                         case (current_col[5:4])
                             2'b10: font_cn_code = 6'd9;  // 开
@@ -336,7 +400,7 @@ always @(*) begin
                     end
                 end
 
-                3'd3: begin // 错误: "密码错误" (32~95)
+                4'd3: begin // 错误: "密码错误" (32~95)
                     if (current_col >= 7'd32 && current_col < 7'd96) begin
                         case (current_col[5:4])
                             2'b10: font_cn_code = 6'd7;  // 密
@@ -348,7 +412,7 @@ always @(*) begin
                     end
                 end
 
-                3'd4: begin // 锁定: "系统已锁定" (24~103)
+                4'd4: begin // 锁定: "系统已锁定" (24~103)
                     if (current_col >= 7'd24 && current_col < 7'd104) begin
                         case ((current_col - 7'd24) >> 4)
                             0: font_cn_code = 6'd15; // 系
@@ -357,6 +421,62 @@ always @(*) begin
                             3: font_cn_code = 6'd10; // 锁
                             4: font_cn_code = 6'd18; // 定
                             default: font_cn_code = 6'd15;
+                        endcase
+                        pixel_out = font_cn_pixel;
+                    end
+                end
+
+                4'd5, 4'd8: begin // S_SET_NEW / S_CHG_NEW: "输6位新密码" -> 输 入 新 密 码 (24~103)
+                    if (current_col >= 7'd24 && current_col < 7'd104) begin
+                        case ((current_col - 7'd24) >> 4)
+                            0: font_cn_code = 6'd5;  // 输
+                            1: font_cn_code = 6'd6;  // 入
+                            2: font_cn_code = 6'd30; // 新
+                            3: font_cn_code = 6'd7;  // 密
+                            4: font_cn_code = 6'd8;  // 码
+                            default: font_cn_code = 6'd5;
+                        endcase
+                        pixel_out = font_cn_pixel;
+                    end
+                end
+
+                4'd6, 4'd9: begin // S_SET_CFM / S_CHG_CFM: "重复输入新密" (24~103)
+                    if (current_col >= 7'd24 && current_col < 7'd104) begin
+                        case ((current_col - 7'd24) >> 4)
+                            0: font_cn_code = 6'd38; // 重
+                            1: font_cn_code = 6'd39; // 复
+                            2: font_cn_code = 6'd5;  // 输
+                            3: font_cn_code = 6'd6;  // 入
+                            4: font_cn_code = 6'd30; // 新
+                            default: font_cn_code = 6'd38;
+                        endcase
+                        pixel_out = font_cn_pixel;
+                    end
+                end
+
+                4'd7: begin // S_CHG_AUTH: "输当前旧密码" (24~103)
+                    if (current_col >= 7'd24 && current_col < 7'd104) begin
+                        case ((current_col - 7'd24) >> 4)
+                            0: font_cn_code = 6'd41; // 当
+                            1: font_cn_code = 6'd42; // 前
+                            2: font_cn_code = 6'd31; // 旧
+                            3: font_cn_code = 6'd7;  // 密
+                            4: font_cn_code = 6'd8;  // 码
+                            default: font_cn_code = 6'd41;
+                        endcase
+                        pixel_out = font_cn_pixel;
+                    end
+                end
+
+                4'd10: begin // S_OP_DONE: "密码已更新" (24~103)
+                    if (current_col >= 7'd24 && current_col < 7'd104) begin
+                        case ((current_col - 7'd24) >> 4)
+                            0: font_cn_code = 6'd7;  // 密
+                            1: font_cn_code = 6'd8;  // 码
+                            2: font_cn_code = 6'd17; // 已
+                            3: font_cn_code = 6'd43; // 更
+                            4: font_cn_code = 6'd30; // 新
+                            default: font_cn_code = 6'd7;
                         endcase
                         pixel_out = font_cn_pixel;
                     end
@@ -380,20 +500,14 @@ always @(*) begin
 
         // ------------------------------------------------------------------
         // Row 2 (Page 4~5): 动态交互数据行
-        // 锁定态: "倒计时: XX 秒" (32~95: 倒计秒, ASCII: 时, 两个数字)
+        // 锁定态: "倒计时: XX 秒"
         // 其他态: 居中显示 6 位掩码 "[ * * * - - - ]"
         // ------------------------------------------------------------------
         3'd4, 3'd5: begin
             font_cn_byte  = {current_page[0], current_col[3:0]};
             font_asc_byte = {current_page[0], current_col[2:0]};
 
-            if (state_code == 3'd4) begin
-                // 锁定态倒计时显示:
-                // 16~47: "倒计" (2个汉字)
-                // 48~55: ASCII ':' (8点)
-                // 56~63: ASCII 十位数字 (8点)
-                // 64~71: ASCII 个位数字 (8点)
-                // 72~87: "秒" (1个汉字)
+            if (state_code == 4'd4) begin
                 if (current_col >= 7'd16 && current_col < 7'd48) begin
                     case ((current_col - 7'd16) >> 4)
                         0: font_cn_code = 6'd19; // 倒
@@ -415,7 +529,6 @@ always @(*) begin
                 end
             end else begin
                 // 居中显示 8 个 8x16 字符: [ 6位掩码 ]
-                // 范围: 32 ~ 95 (每字符 8 列)
                 if (current_col >= 7'd32 && current_col < 7'd96) begin
                     case ((current_col - 7'd32) >> 3)
                         0: font_asc_code = 5'd12; // '['
@@ -435,32 +548,77 @@ always @(*) begin
 
         // ------------------------------------------------------------------
         // Row 3 (Page 6~7): 底部提示行
-        // "剩余: X 次" 或 按键引导
         // ------------------------------------------------------------------
         3'd6, 3'd7: begin
             font_cn_byte  = {current_page[0], current_col[3:0]};
             font_asc_byte = {current_page[0], current_col[2:0]};
 
-            // 居中: "剩余: X 次"
-            // 32~63: "剩余" (32点)
-            // 64~71: ASCII ':' (8点)
-            // 72~79: ASCII 剩余次数数字 (8点)
-            // 80~95: "次" (16点)
-            if (current_col >= 7'd32 && current_col < 7'd64) begin
-                case ((current_col - 7'd32) >> 4)
-                    0: font_cn_code = 6'd23; // 剩
-                    1: font_cn_code = 6'd24; // 余
-                endcase
-                pixel_out = font_cn_pixel;
-            end else if (current_col >= 7'd64 && current_col < 7'd72) begin
-                font_asc_code = 5'd10; // ':'
-                pixel_out     = font_asc_pixel;
-            end else if (current_col >= 7'd72 && current_col < 7'd80) begin
-                font_asc_code = {1'b0, remain_retries};
-                pixel_out     = font_asc_pixel;
-            end else if (current_col >= 7'd80 && current_col < 7'd96) begin
-                font_cn_code = 6'd25; // 次
-                pixel_out    = font_cn_pixel;
+            if (state_code == 4'd5 || state_code == 4'd6 ||
+                state_code == 4'd7 || state_code == 4'd8 || state_code == 4'd9) begin
+                // 录入/改密流程底部提示: "# 确认   * 取消"
+                if (current_col >= 7'd16 && current_col < 7'd24) begin
+                    font_asc_code = 5'd15; // '#'
+                    pixel_out     = font_asc_pixel;
+                end else if (current_col >= 7'd24 && current_col < 7'd56) begin
+                    case ((current_col - 7'd24) >> 4)
+                        0: font_cn_code = 6'd26; // 确
+                        1: font_cn_code = 6'd27; // 认
+                    endcase
+                    pixel_out = font_cn_pixel;
+                end else if (current_col >= 7'd72 && current_col < 7'd80) begin
+                    font_asc_code = 5'd14; // '*'
+                    pixel_out     = font_asc_pixel;
+                end else if (current_col >= 7'd80 && current_col < 7'd112) begin
+                    case ((current_col - 7'd80) >> 4)
+                        0: font_cn_code = 6'd28; // 清
+                        1: font_cn_code = 6'd29; // 除
+                    endcase
+                    pixel_out = font_cn_pixel;
+                end
+            end else if (state_code == 4'd2) begin
+                // 开锁成功提示: "门锁已开启" (24~103)
+                if (current_col >= 7'd24 && current_col < 7'd104) begin
+                    case ((current_col - 7'd24) >> 4)
+                        0: font_cn_code = 6'd44; // 门
+                        1: font_cn_code = 6'd10; // 锁
+                        2: font_cn_code = 6'd17; // 已
+                        3: font_cn_code = 6'd9;  // 开
+                        4: font_cn_code = 6'd12; // 功
+                        default: font_cn_code = 6'd44;
+                    endcase
+                    pixel_out = font_cn_pixel;
+                end
+            end else if (state_code == 4'd4) begin
+                // 锁定提示: "键盘已锁定" (24~103)
+                if (current_col >= 7'd24 && current_col < 7'd104) begin
+                    case ((current_col - 7'd24) >> 4)
+                        0: font_cn_code = 6'd45; // 键
+                        1: font_cn_code = 6'd46; // 盘
+                        2: font_cn_code = 6'd17; // 已
+                        3: font_cn_code = 6'd10; // 锁
+                        4: font_cn_code = 6'd18; // 定
+                        default: font_cn_code = 6'd45;
+                    endcase
+                    pixel_out = font_cn_pixel;
+                end
+            end else begin
+                // 待机与密码输入: "剩余: X 次"
+                if (current_col >= 7'd32 && current_col < 7'd64) begin
+                    case ((current_col - 7'd32) >> 4)
+                        0: font_cn_code = 6'd23; // 剩
+                        1: font_cn_code = 6'd24; // 余
+                    endcase
+                    pixel_out = font_cn_pixel;
+                end else if (current_col >= 7'd64 && current_col < 7'd72) begin
+                    font_asc_code = 5'd10; // ':'
+                    pixel_out     = font_asc_pixel;
+                end else if (current_col >= 7'd72 && current_col < 7'd80) begin
+                    font_asc_code = {1'b0, remain_retries};
+                    pixel_out     = font_asc_pixel;
+                end else if (current_col >= 7'd80 && current_col < 7'd96) begin
+                    font_cn_code = 6'd25; // 次
+                    pixel_out    = font_cn_pixel;
+                end
             end
         end
 

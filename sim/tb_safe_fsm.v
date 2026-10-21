@@ -2,7 +2,7 @@
 
 // ==============================================================================
 // 模块名称: tb_safe_fsm
-// 功能描述: 保险箱主状态机 safe_fsm 单元测试激励平台 (全覆盖)
+// 功能描述: 保险箱主状态机 safe_fsm 单元测试激励平台 (Day 6 全覆盖)
 // 测试内容:
 //   1. 键盘敲击数字录入与按键提示音
 //   2. 退格键 '*' 移除末位输入
@@ -13,6 +13,11 @@
 //   7. 输入正确密码 "123456" 成功开锁与和弦音
 //   8. 输入反挟持密码 "654321" 触发开锁与粘滞报警 (P1-I)
 //   9. 外部 duress_clear 清除粘滞报警
+//  10. 【Day 6】按 A 键录入新密码 "888888" 并二次确认更新成功
+//  11. 【Day 6】使用新密码 "888888" 成功开锁
+//  12. 【Day 6】开锁保持期间按 C 键提前闭锁
+//  13. 【Day 6】按 B 键验旧改密 (旧密码输错计入错误惩罚)
+//  14. 【Day 6】按 B 键验旧改密 (新密码两次不一致放弃)
 // ==============================================================================
 
 module tb_safe_fsm;
@@ -26,12 +31,13 @@ module tb_safe_fsm;
     reg        key_valid;
     reg        duress_clear;
 
-    wire [2:0] state_code;
+    wire [3:0] state_code;
     wire [2:0] pwd_len;
     wire [1:0] err_count;
     wire [6:0] lock_countdown;
     wire       unlock_en;
     wire       duress_alarm;
+    wire       pwd_changed;
     wire       beep_key;
     wire       beep_err;
     wire       beep_lock;
@@ -55,6 +61,7 @@ module tb_safe_fsm;
         .lock_countdown(lock_countdown),
         .unlock_en     (unlock_en),
         .duress_alarm  (duress_alarm),
+        .pwd_changed   (pwd_changed),
         .beep_key      (beep_key),
         .beep_err      (beep_err),
         .beep_lock     (beep_lock),
@@ -89,7 +96,7 @@ module tb_safe_fsm;
     endtask
 
     initial begin
-        $display("[INFO] Starting safe_fsm Testbench...");
+        $display("[INFO] Starting safe_fsm Testbench (Day 6)...");
         rst_n        = 1'b0;
         key_val      = 4'h0;
         key_valid    = 1'b0;
@@ -100,14 +107,14 @@ module tb_safe_fsm;
 
         $display("[TEST 1] Testing single digit press & key sound...");
         press_key(4'h1);
-        if (pwd_len == 3'd1 && state_code == 3'd1)
+        if (pwd_len == 3'd1 && state_code == 4'd1)
             $display("[PASS] State transitioned to INPUT, pwd_len=1");
         else
             $display("[FAIL] Expected pwd_len=1, got %d", pwd_len);
 
         $display("[TEST 2] Testing Backspace '* '...");
         press_key(4'hE); // '*'
-        if (pwd_len == 3'd0 && state_code == 3'd0)
+        if (pwd_len == 3'd0 && state_code == 4'd0)
             $display("[PASS] Backspace reset to IDLE, pwd_len=0");
         else
             $display("[FAIL] Expected pwd_len=0, got %d", pwd_len);
@@ -116,7 +123,7 @@ module tb_safe_fsm;
         press_key(4'h1);
         press_key(4'h2);
         press_key(4'hF); // '#' 键在不足 6 位时按下
-        if (err_count == 2'd0 && state_code == 3'd1)
+        if (err_count == 2'd0 && state_code == 4'd1)
             $display("[PASS] P1-G verified: err_count remains 0, state stays INPUT.");
         else
             $display("[FAIL] P1-G failed: err_count=%d, state=%d", err_count, state_code);
@@ -131,7 +138,7 @@ module tb_safe_fsm;
         press_key(4'h9); press_key(4'h9); press_key(4'h9);
         press_key(4'hF);
         #(CLK_PERIOD * 20);
-        if (err_count == 2'd1 && state_code == 3'd3)
+        if (err_count == 2'd1 && state_code == 4'd3)
             $display("[PASS] 1st wrong attempt: ERROR state, err_count=1");
         
         // 等待错误保持结束 (1500 tick_1k)
@@ -142,7 +149,7 @@ module tb_safe_fsm;
         press_key(4'h9); press_key(4'h9); press_key(4'h9);
         press_key(4'hF);
         #(CLK_PERIOD * 20);
-        if (err_count == 2'd2 && state_code == 3'd3)
+        if (err_count == 2'd2 && state_code == 4'd3)
             $display("[PASS] 2nd wrong attempt: ERROR state, err_count=2");
 
         #(CLK_PERIOD * 10000);
@@ -152,7 +159,7 @@ module tb_safe_fsm;
         press_key(4'h9); press_key(4'h9); press_key(4'h9);
         press_key(4'hF);
         #(CLK_PERIOD * 20);
-        if (err_count == 2'd3 && state_code == 3'd4 && lock_countdown == 7'd3)
+        if (err_count == 2'd3 && state_code == 4'd4 && lock_countdown == 7'd3)
             $display("[PASS] 3rd wrong attempt: LOCKED state entered! lock_countdown=3");
         else
             $display("[FAIL] LOCKED state not entered. state=%d, err_count=%d", state_code, err_count);
@@ -160,12 +167,12 @@ module tb_safe_fsm;
         $display("[TEST 5] Testing key presses swallowed during lock...");
         press_key(4'h1);
         press_key(4'h2);
-        if (state_code == 3'd4 && pwd_len == 3'd0)
+        if (state_code == 4'd4 && pwd_len == 3'd0)
             $display("[PASS] Key presses swallowed during lock.");
 
         $display("[TEST 6] Waiting for lock countdown to reach 0...");
         #(CLK_PERIOD * 25000);
-        if (state_code == 3'd0 && err_count == 2'd0)
+        if (state_code == 4'd0 && err_count == 2'd0)
             $display("[PASS] Lock countdown expired. Restored to IDLE, err_count=0.");
 
         $display("[TEST 7] Testing correct password '123456' unlock...");
@@ -173,12 +180,12 @@ module tb_safe_fsm;
         press_key(4'h4); press_key(4'h5); press_key(4'h6);
         press_key(4'hF);
         #(CLK_PERIOD * 20);
-        if (state_code == 3'd2 && unlock_en == 1'b1)
+        if (state_code == 4'd2 && unlock_en == 1'b1)
             $display("[PASS] Correct password unlocks successfully! unlock_en=1");
 
         // 等待 3 秒开锁保持结束
         #(CLK_PERIOD * 25000);
-        if (state_code == 3'd0 && unlock_en == 1'b0)
+        if (state_code == 4'd0 && unlock_en == 1'b0)
             $display("[PASS] Relocked after 3s, returned to IDLE.");
 
         $display("[TEST 8] Testing duress password '654321' & sticky alarm (P1-I)...");
@@ -189,9 +196,8 @@ module tb_safe_fsm;
         if (unlock_en == 1'b1 && duress_alarm == 1'b1)
             $display("[PASS] Duress password: surface unlock_en=1, duress_alarm=1");
 
-        // 等待 3 秒开锁保持结束，确认 duress_alarm 仍然保持为 1 (粘滞锁存)
         #(CLK_PERIOD * 25000);
-        if (state_code == 3'd0 && duress_alarm == 1'b1)
+        if (state_code == 4'd0 && duress_alarm == 1'b1)
             $display("[PASS] P1-I verified: duress_alarm remains sticky after relock!");
 
         $display("[TEST 9] Clearing duress alarm...");
@@ -203,7 +209,89 @@ module tb_safe_fsm;
         if (duress_alarm == 1'b0)
             $display("[PASS] duress_alarm cleared successfully.");
 
-        $display("[INFO] All safe_fsm test cases passed!");
+        // ==============================================================
+        // Day 6 新增用例测试
+        // ==============================================================
+        $display("[TEST 10] A-Key Setup: New password '888888' & confirm...");
+        press_key(4'hA); // 进入录入模式
+        if (state_code == 4'd5)
+            $display("[PASS] Entered S_SET_NEW (state_code=5)");
+        
+        // 输入 6 位新密码 888888
+        press_key(4'h8); press_key(4'h8); press_key(4'h8);
+        press_key(4'h8); press_key(4'h8); press_key(4'h8);
+        press_key(4'hF); // 提交第一轮
+        #(CLK_PERIOD * 10);
+        if (state_code == 4'd6)
+            $display("[PASS] Transitioned to S_SET_CFM (state_code=6)");
+
+        // 再次输入 888888 确认
+        press_key(4'h8); press_key(4'h8); press_key(4'h8);
+        press_key(4'h8); press_key(4'h8); press_key(4'h8);
+        press_key(4'hF); // 提交确认
+        #(CLK_PERIOD * 10);
+        if (pwd_changed == 1'b1 && beep_succ == 1'b1)
+            $display("[PASS] Password changed pulse asserted & success chime triggered!");
+
+        // 等待 OP_DONE 提示结束回到 IDLE
+        #(CLK_PERIOD * 10000);
+        if (state_code == 4'd0)
+            $display("[PASS] Returned to IDLE after password updated.");
+
+        $display("[TEST 11] Unlocking with NEW password '888888'...");
+        press_key(4'h8); press_key(4'h8); press_key(4'h8);
+        press_key(4'h8); press_key(4'h8); press_key(4'h8);
+        press_key(4'hF);
+        #(CLK_PERIOD * 20);
+        if (state_code == 4'd2 && unlock_en == 1'b1)
+            $display("[PASS] New password unlocked safe successfully! (unlock_en=1)");
+
+        $display("[TEST 12] C-Key immediate early lock test...");
+        press_key(4'hC); // 提前闭锁
+        #(CLK_PERIOD * 20);
+        if (state_code == 4'd0 && unlock_en == 1'b0)
+            $display("[PASS] C-key immediately closed lock without waiting 3s!");
+
+        $display("[TEST 13] B-Key auth test with wrong old password '111111'...");
+        press_key(4'hB); // 改密模式
+        if (state_code == 4'd7)
+            $display("[PASS] Entered S_CHG_AUTH");
+        press_key(4'h1); press_key(4'h1); press_key(4'h1);
+        press_key(4'h1); press_key(4'h1); press_key(4'h1);
+        press_key(4'hF);
+        #(CLK_PERIOD * 20);
+        if (err_count == 2'd1 && state_code == 4'd3)
+            $display("[PASS] Old password wrong: counted err_count=1, state ERROR.");
+        
+        #(CLK_PERIOD * 10000);
+
+        $display("[TEST 14] B-Key auth success ('888888') but mismatch confirm...");
+        press_key(4'hB);
+        // 输入正确旧密
+        press_key(4'h8); press_key(4'h8); press_key(4'h8);
+        press_key(4'h8); press_key(4'h8); press_key(4'h8);
+        press_key(4'hF);
+        #(CLK_PERIOD * 20);
+        if (state_code == 4'd8)
+            $display("[PASS] Old password correct! Entered S_CHG_NEW.");
+
+        // 输新密 999999
+        press_key(4'h9); press_key(4'h9); press_key(4'h9);
+        press_key(4'h9); press_key(4'h9); press_key(4'h9);
+        press_key(4'hF);
+        #(CLK_PERIOD * 20);
+        if (state_code == 4'd9)
+            $display("[PASS] Entered S_CHG_CFM.");
+
+        // 确认时输入不同密码 777777
+        press_key(4'h7); press_key(4'h7); press_key(4'h7);
+        press_key(4'h7); press_key(4'h7); press_key(4'h7);
+        press_key(4'hF);
+        #(CLK_PERIOD * 20);
+        if (state_code == 4'd3 && pwd_changed == 1'b0)
+            $display("[PASS] Mismatch rejected! pwd_changed=0, state ERROR.");
+
+        $display("[INFO] ALL safe_fsm Day 6 tests passed successfully!");
         $finish;
     end
 

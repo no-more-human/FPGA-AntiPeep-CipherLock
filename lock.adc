@@ -63,3 +63,6 @@ set_pin_assignment	{ voice_busy }	{ LOCATION = G16; IOSTANDARD = LVCMOS33; PULLT
 
 ## 门磁传感器检测接口 (SW1 / GPS-23 干簧管门磁双轨，引脚: A10，Day 5 任务)
 set_pin_assignment	{ door_gpio }	{ LOCATION = A10; IOSTANDARD = LVCMOS33; PULLTYPE = PULLUP; }
+
+## SG90 舵机 50Hz PWM 控制信号 (引脚: F14，Day 6 任务)
+set_pin_assignment	{ servo_pwm }	{ LOCATION = F14; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }

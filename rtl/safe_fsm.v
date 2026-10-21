@@ -1,7 +1,7 @@
 // ==============================================================================
 // 工程名称: 基于 Edge AI 视觉防窥与 FPGA 硬件安全的异构智能保险箱
-// 模块名称: safe_fsm (保险箱主业务控制状态机与密码比对/输错锁定模块)
-// 阶段任务: Day 4~5 - 6位核心密码比对、连续输错3次锁定60秒、蜂鸣器音效联动、反挟持粘滞报警
+// 模块名称: safe_fsm (保险箱主业务控制状态机与密码比对/输错锁定/动态改密模块)
+// 阶段任务: Day 6 - 动态密码寄存器、A键首次录入、B键验旧改密、C键提前闭锁、15s超时防呆
 // 硬件平台: 安路 (Anlogic) EG4S20BG256
 // ==============================================================================
 
@@ -11,29 +11,33 @@
 `define __SAFE_FSM_V__
 
 module safe_fsm #(
-    // 默认预设 6 位核心密码: "123456" (6 个 4-bit 十进制数字)
-    parameter [23:0] DEFAULT_PWD = {4'h1, 4'h2, 4'h3, 4'h4, 4'h5, 4'h6},
+    // 默认初始预设 6 位核心密码: "123456" (6 个 4-bit 十进制数字)
+    parameter [23:0] DEFAULT_PWD       = {4'h1, 4'h2, 4'h3, 4'h4, 4'h5, 4'h6},
     // 默认预设 6 位反挟持密码: "654321" (为后续 Day 10 创新点预留)
-    parameter [23:0] DURESS_PWD  = {4'h6, 4'h5, 4'h4, 4'h3, 4'h2, 4'h1},
+    parameter [23:0] DURESS_PWD        = {4'h6, 4'h5, 4'h4, 4'h3, 4'h2, 4'h1},
     // 锁定时间常量 (标准竞赛规格: 60 秒)
-    parameter LOCK_TIMEOUT_SEC   = 60
+    parameter        LOCK_TIMEOUT_SEC  = 60,
+    // 录入/改密流程无操作超时时间 (15 秒)
+    parameter        OP_TIMEOUT_SEC    = 15
 )(
     input  wire        clk,            // 50MHz 系统主时钟
     input  wire        rst_n,          // 全局异步复位 (低有效)
     input  wire        tick_1k,        // 1kHz (1ms) 系统节拍脉冲
     
     // 键盘扫描模块交互输入
-    input  wire [3:0]  key_val,        // 按键键值 (0x0~0x9:数字, 0xE:*, 0xF:#)
+    input  wire [3:0]  key_val,        // 按键键值 (0x0~0x9:数字, 0xA:A, 0xB:B, 0xC:C, 0xE:*, 0xF:#)
     input  wire        key_valid,      // 消抖后单周期按键有效脉冲
     input  wire        duress_clear,   // 外部清除反挟持粘滞报警 (预留给 PC 串口或复位)
     
-    // 业务状态输出 (供 OLED、数码管、LED 驱动)
-    output reg  [2:0]  state_code,     // 0:IDLE, 1:INPUT, 2:SUCCESS, 3:ERROR, 4:LOCKED
+    // 业务状态输出 (供 OLED、数码管、LED 驱动，扩充为 4 位)
+    // 0:IDLE, 1:INPUT, 2:SUCCESS, 3:ERROR, 4:LOCKED, 5:SET_NEW, 6:SET_CFM, 7:CHG_AUTH, 8:CHG_NEW, 9:CHG_CFM, 10:OP_DONE
+    output reg  [3:0]  state_code,     
     output reg  [2:0]  pwd_len,        // 当前输入的密码长度 (0~6)
     output reg  [1:0]  err_count,      // 当前累计输错次数 (0~3)
     output reg  [6:0]  lock_countdown, // 锁定倒计时剩余秒数 (0~60)
     output reg         unlock_en,      // 开锁使能 (驱动舵机与成功指示)
     output reg         duress_alarm,   // 挟持静默告警使能 (预留给 PC 串口，粘滞锁存)
+    output reg         pwd_changed,    // 密码成功更新单周期脉冲 (供语音播报 Track 5)
     
     // 音效触发脉冲输出 (单周期高电平，连接 buzzer_driver)
     output reg         beep_key,       // 按键音触发
@@ -45,17 +49,29 @@ module safe_fsm #(
 // --------------------------------------------------------------------------
 // 1. 状态定义
 // --------------------------------------------------------------------------
-localparam S_IDLE    = 3'd0; // 空闲待机
-localparam S_INPUT   = 3'd1; // 密码敲击输入中
-localparam S_CHECK   = 3'd2; // 内部密码比对判决 (单周期瞬态)
-localparam S_SUCCESS = 3'd3; // 密码正确，开锁成功 (保持 3 秒)
-localparam S_ERROR   = 3'd4; // 密码错误提示 (保持 1.5 秒)
-localparam S_LOCKED  = 3'd5; // 连续输错 3 次，锁定 60 秒 (键盘锁死)
+localparam S_IDLE     = 4'd0;  // 空闲待机
+localparam S_INPUT    = 4'd1;  // 密码敲击输入中
+localparam S_CHECK    = 4'd2;  // 内部密码比对判决 (单周期瞬态)
+localparam S_SUCCESS  = 4'd3;  // 密码正确，开锁成功 (保持 3 秒)
+localparam S_ERROR    = 4'd4;  // 密码错误提示 (保持 1.5 秒)
+localparam S_LOCKED   = 4'd5;  // 连续输错 3 次，锁定 60 秒 (键盘锁死)
+localparam S_SET_NEW  = 4'd6;  // A键: 首次录入-输入6位新密码
+localparam S_SET_CFM  = 4'd7;  // A键: 首次录入-再次输入确认
+localparam S_CHG_AUTH = 4'd8;  // B键: 改密-输入旧密码验权
+localparam S_CHG_NEW  = 4'd9;  // B键: 改密-输入6位新密码
+localparam S_CHG_CFM  = 4'd10; // B键: 改密-再次输入确认
+localparam S_OP_DONE  = 4'd11; // 录入/改密成功提示保持 (1.5秒)
 
-reg [2:0] state;
+reg [3:0]  state;
+
+// 动态密码寄存器 (上电/复位时赋初始值 DEFAULT_PWD)
+reg [23:0] current_pwd;
 
 // 6 位输入数字暂存缓冲区 (每个 4-bit)
-reg [3:0] input_digits [0:5];
+reg [3:0]  input_digits [0:5];
+
+// 6 位二次确认对比暂存缓冲区 (用于 A/B 键确认新密码)
+reg [3:0]  new_pwd_digits [0:5];
 
 // 组装为 24 位总线以便单拍比对
 wire [23:0] assembled_input = {
@@ -63,22 +79,34 @@ wire [23:0] assembled_input = {
     input_digits[3], input_digits[4], input_digits[5]
 };
 
+wire [23:0] assembled_new = {
+    new_pwd_digits[0], new_pwd_digits[1], new_pwd_digits[2],
+    new_pwd_digits[3], new_pwd_digits[4], new_pwd_digits[5]
+};
+
 // 毫秒级定时器计数器
 reg [11:0] ms_timer;
-reg [9:0]  sec_tick_cnt; // 0~999 ms 用于锁定倒计时每秒减 1
+reg [9:0]  sec_tick_cnt;  // 0~999 ms 用于锁定倒计时每秒减 1
+reg [13:0] op_timeout_ms; // 15 秒无操作看门狗定时器 (0~15000ms)
 
 // --------------------------------------------------------------------------
-// 2. 状态映射输出 (保持与 seg_display 编码对齐)
+// 2. 状态映射输出 (与 seg_display / oled_driver 编码对齐)
 // --------------------------------------------------------------------------
 always @(*) begin
     case (state)
-        S_IDLE:    state_code = 3'd0;
-        S_INPUT:   state_code = 3'd1;
-        S_CHECK:   state_code = 3'd1;
-        S_SUCCESS: state_code = 3'd2;
-        S_ERROR:   state_code = 3'd3;
-        S_LOCKED:  state_code = 3'd4;
-        default:   state_code = 3'd0;
+        S_IDLE:     state_code = 4'd0;
+        S_INPUT:    state_code = 4'd1;
+        S_CHECK:    state_code = 4'd1;
+        S_SUCCESS:  state_code = 4'd2;
+        S_ERROR:    state_code = 4'd3;
+        S_LOCKED:   state_code = 4'd4;
+        S_SET_NEW:  state_code = 4'd5;
+        S_SET_CFM:  state_code = 4'd6;
+        S_CHG_AUTH: state_code = 4'd7;
+        S_CHG_NEW:  state_code = 4'd8;
+        S_CHG_CFM:  state_code = 4'd9;
+        S_OP_DONE:  state_code = 4'd10;
+        default:    state_code = 4'd0;
     endcase
 end
 
@@ -90,30 +118,52 @@ integer i;
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
         state          <= S_IDLE;
+        current_pwd    <= DEFAULT_PWD;
         pwd_len        <= 3'd0;
         err_count      <= 2'd0;
         lock_countdown <= 7'd0;
         unlock_en      <= 1'b0;
         duress_alarm   <= 1'b0;
+        pwd_changed    <= 1'b0;
         beep_key       <= 1'b0;
         beep_err       <= 1'b0;
         beep_lock      <= 1'b0;
         beep_succ      <= 1'b0;
         ms_timer       <= 12'd0;
         sec_tick_cnt   <= 10'd0;
+        op_timeout_ms  <= 14'd0;
         for (i = 0; i < 6; i = i + 1) begin
-            input_digits[i] <= 4'h0;
+            input_digits[i]   <= 4'h0;
+            new_pwd_digits[i] <= 4'h0;
         end
     end else begin
         // 默认清除单周期脉冲
-        beep_key  <= 1'b0;
-        beep_err  <= 1'b0;
-        beep_lock <= 1'b0;
-        beep_succ <= 1'b0;
+        beep_key    <= 1'b0;
+        beep_err    <= 1'b0;
+        beep_lock   <= 1'b0;
+        beep_succ   <= 1'b0;
+        pwd_changed <= 1'b0;
 
         // 外部清除粘滞反挟持告警
         if (duress_clear) begin
             duress_alarm <= 1'b0;
+        end
+
+        // 录入与改密流程的 15 秒无操作看门狗计时
+        if (state == S_SET_NEW || state == S_SET_CFM ||
+            state == S_CHG_AUTH || state == S_CHG_NEW || state == S_CHG_CFM) begin
+            if (key_valid) begin
+                op_timeout_ms <= 14'd15000; // 只要有任何按键按下，重置 15s 看门狗
+            end else if (tick_1k) begin
+                if (op_timeout_ms > 14'd0) begin
+                    op_timeout_ms <= op_timeout_ms - 14'd1;
+                end else begin
+                    // 15 秒超时无操作，强制放弃改密/录入流程，安全退回待机
+                    pwd_len  <= 3'd0;
+                    beep_err <= 1'b1;
+                    state    <= S_IDLE;
+                end
+            end
         end
 
         case (state)
@@ -127,19 +177,35 @@ always @(posedge clk or negedge rst_n) begin
                 
                 if (key_valid) begin
                     if (key_val <= 4'h9) begin
-                        // 敲击首位数字键，进入输入态
+                        // 敲击首位数字键，进入日常开锁输入态
                         input_digits[0] <= key_val;
                         pwd_len         <= 3'd1;
                         beep_key        <= 1'b1;
                         state           <= S_INPUT;
-                    end else if (key_val == 4'hE) begin // '*' 清空
+                    end else if (key_val == 4'hA) begin
+                        // 'A' 键: 新用户开荒录入通道 (直接输 6 位新密码)
+                        pwd_len       <= 3'd0;
+                        beep_key      <= 1'b1;
+                        op_timeout_ms <= 14'd15000;
+                        state         <= S_SET_NEW;
+                    end else if (key_val == 4'hB) begin
+                        // 'B' 键: 老用户安全改密通道 (需先验旧密码)
+                        pwd_len       <= 3'd0;
+                        beep_key      <= 1'b1;
+                        op_timeout_ms <= 14'd15000;
+                        state         <= S_CHG_AUTH;
+                    end else if (key_val == 4'hC) begin
+                        // 'C' 键: 待机强刷清屏
+                        beep_key <= 1'b1;
+                    end else if (key_val == 4'hE) begin
+                        // '*' 键: 提示音
                         beep_key <= 1'b1;
                     end
                 end
             end
 
             // --------------------------------------------------------------
-            // 密码输入态
+            // 密码输入态 (日常开锁)
             // --------------------------------------------------------------
             S_INPUT: begin
                 if (key_valid) begin
@@ -150,20 +216,19 @@ always @(posedge clk or negedge rst_n) begin
                             pwd_len               <= pwd_len + 3'd1;
                             beep_key              <= 1'b1;
                         end else begin
-                            // 已满 6 位，仍发出按键音提示
                             beep_key <= 1'b1;
                         end
                     end else if (key_val == 4'hE) begin
-                        // '*' 键: 退格一位
+                        // '*' 键: 退格一位，全部退完回待机
                         beep_key <= 1'b1;
                         if (pwd_len > 3'd1) begin
                             pwd_len <= pwd_len - 3'd1;
                         end else if (pwd_len == 3'd1) begin
                             pwd_len <= 3'd0;
-                            state   <= S_IDLE; // 全部退完回待机
+                            state   <= S_IDLE;
                         end
                     end else if (key_val == 4'hF) begin
-                        // '#' 键: 满 6 位才比对；未满 6 位仅响按键音，不计入错误次数 (P1-G 防呆)
+                        // '#' 键: 满 6 位才比对；未满 6 位仅提示音防呆
                         beep_key <= 1'b1;
                         if (pwd_len == 3'd6) begin
                             state <= S_CHECK;
@@ -173,19 +238,19 @@ always @(posedge clk or negedge rst_n) begin
             end
 
             // --------------------------------------------------------------
-            // 密码比对判决态 (单拍决策)
+            // 密码比对判决态 (单拍决策，比对动态 current_pwd)
             // --------------------------------------------------------------
             S_CHECK: begin
                 if (pwd_len == 3'd6) begin
-                    if (assembled_input == DEFAULT_PWD) begin
-                        // 常规密码匹配成功！
+                    if (assembled_input == current_pwd) begin
+                        // 动态密码匹配成功！
                         err_count <= 2'd0;
                         unlock_en <= 1'b1;
                         beep_succ <= 1'b1;
                         ms_timer  <= 12'd3000; // 成功开锁保持 3 秒
                         state     <= S_SUCCESS;
                     end else if (assembled_input == DURESS_PWD) begin
-                        // 反挟持密码匹配成功！(表面开门，底层静默粘滞告警 P1-I)
+                        // 反挟持密码匹配成功！(表面开门，底层静默粘滞告警)
                         err_count    <= 2'd0;
                         unlock_en    <= 1'b1;
                         duress_alarm <= 1'b1;
@@ -210,16 +275,21 @@ always @(posedge clk or negedge rst_n) begin
                         end
                     end
                 end else begin
-                    // 安全网分支 (正常流转由 S_INPUT 拦截)
                     state <= S_INPUT;
                 end
             end
 
             // --------------------------------------------------------------
-            // 开门成功保持态 (保持 3 秒后自动闭锁回待机)
+            // 开门成功保持态 (保持 3 秒后回弹，支持按 C 键提前闭锁)
             // --------------------------------------------------------------
             S_SUCCESS: begin
-                if (tick_1k) begin
+                if (key_valid && (key_val == 4'hC)) begin
+                    // 按 C 键立即手动闭锁回待机，无需等待满 3 秒！
+                    unlock_en <= 1'b0;
+                    pwd_len   <= 3'd0;
+                    beep_key  <= 1'b1;
+                    state     <= S_IDLE;
+                end else if (tick_1k) begin
                     if (ms_timer > 12'd0) begin
                         ms_timer <= ms_timer - 12'd1;
                     end else begin
@@ -251,7 +321,6 @@ always @(posedge clk or negedge rst_n) begin
                 unlock_en <= 1'b0;
                 pwd_len   <= 3'd0;
                 
-                // 屏蔽所有 key_valid 敲击事件
                 if (tick_1k) begin
                     if (sec_tick_cnt >= 10'd999) begin
                         sec_tick_cnt <= 10'd0;
@@ -265,6 +334,214 @@ always @(posedge clk or negedge rst_n) begin
                         end
                     end else begin
                         sec_tick_cnt <= sec_tick_cnt + 10'd1;
+                    end
+                end
+            end
+
+            // --------------------------------------------------------------
+            // 【Day 6 任务】A 键开荒录入 - 输入 6 位新密码
+            // --------------------------------------------------------------
+            S_SET_NEW: begin
+                if (key_valid) begin
+                    if (key_val <= 4'h9) begin
+                        if (pwd_len < 3'd6) begin
+                            input_digits[pwd_len] <= key_val;
+                            pwd_len               <= pwd_len + 3'd1;
+                            beep_key              <= 1'b1;
+                        end
+                    end else if (key_val == 4'hE) begin
+                        // '*' 键: 正在输入时退格；为空时直接取消录入退回待机
+                        beep_key <= 1'b1;
+                        if (pwd_len > 3'd0) begin
+                            pwd_len <= pwd_len - 3'd1;
+                        end else begin
+                            state <= S_IDLE;
+                        end
+                    end else if (key_val == 4'hF) begin
+                        // '#' 键: 满 6 位后暂存新密码，推进入二次确认阶段
+                        beep_key <= 1'b1;
+                        if (pwd_len == 3'd6) begin
+                            for (i = 0; i < 6; i = i + 1) begin
+                                new_pwd_digits[i] <= input_digits[i];
+                            end
+                            pwd_len       <= 3'd0;
+                            op_timeout_ms <= 14'd15000;
+                            state         <= S_SET_CFM;
+                        end
+                    end
+                end
+            end
+
+            // --------------------------------------------------------------
+            // 【Day 6 任务】A 键开荒录入 - 再次输入新密码进行确认
+            // --------------------------------------------------------------
+            S_SET_CFM: begin
+                if (key_valid) begin
+                    if (key_val <= 4'h9) begin
+                        if (pwd_len < 3'd6) begin
+                            input_digits[pwd_len] <= key_val;
+                            pwd_len               <= pwd_len + 3'd1;
+                            beep_key              <= 1'b1;
+                        end
+                    end else if (key_val == 4'hE) begin
+                        beep_key <= 1'b1;
+                        if (pwd_len > 3'd0) begin
+                            pwd_len <= pwd_len - 3'd1;
+                        end else begin
+                            state <= S_IDLE; // 取消
+                        end
+                    end else if (key_val == 4'hF) begin
+                        beep_key <= 1'b1;
+                        if (pwd_len == 3'd6) begin
+                            if (assembled_input == assembled_new) begin
+                                // 两次输入完全一致，写入动态密码生效！
+                                current_pwd <= assembled_input;
+                                pwd_changed <= 1'b1;
+                                beep_succ   <= 1'b1;
+                                ms_timer    <= 12'd1500;
+                                pwd_len     <= 3'd0;
+                                state       <= S_OP_DONE;
+                            end else begin
+                                // 两次输入不符，提示错误并放弃
+                                beep_err <= 1'b1;
+                                ms_timer <= 12'd1500;
+                                pwd_len  <= 3'd0;
+                                state    <= S_ERROR;
+                            end
+                        end
+                    end
+                end
+            end
+
+            // --------------------------------------------------------------
+            // 【Day 6 任务】B 键安全改密 - 输入当前旧密码验权
+            // --------------------------------------------------------------
+            S_CHG_AUTH: begin
+                if (key_valid) begin
+                    if (key_val <= 4'h9) begin
+                        if (pwd_len < 3'd6) begin
+                            input_digits[pwd_len] <= key_val;
+                            pwd_len               <= pwd_len + 3'd1;
+                            beep_key              <= 1'b1;
+                        end
+                    end else if (key_val == 4'hE) begin
+                        beep_key <= 1'b1;
+                        if (pwd_len > 3'd0) begin
+                            pwd_len <= pwd_len - 3'd1;
+                        end else begin
+                            state <= S_IDLE; // 取消
+                        end
+                    end else if (key_val == 4'hF) begin
+                        beep_key <= 1'b1;
+                        if (pwd_len == 3'd6) begin
+                            if (assembled_input == current_pwd) begin
+                                // 旧密码核验成功，进入新密码录入阶段！
+                                pwd_len       <= 3'd0;
+                                op_timeout_ms <= 14'd15000;
+                                state         <= S_CHG_NEW;
+                            end else begin
+                                // 旧密码错误，扣罚错误次数 (达到 3 次同样锁机)
+                                if (err_count >= 2'd2) begin
+                                    err_count      <= 2'd3;
+                                    lock_countdown <= LOCK_TIMEOUT_SEC;
+                                    sec_tick_cnt   <= 10'd0;
+                                    beep_lock      <= 1'b1;
+                                    pwd_len        <= 3'd0;
+                                    state          <= S_LOCKED;
+                                end else begin
+                                    err_count <= err_count + 2'd1;
+                                    beep_err  <= 1'b1;
+                                    ms_timer  <= 12'd1500;
+                                    pwd_len   <= 3'd0;
+                                    state     <= S_ERROR;
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+
+            // --------------------------------------------------------------
+            // 【Day 6 任务】B 键安全改密 - 输入 6 位新密码
+            // --------------------------------------------------------------
+            S_CHG_NEW: begin
+                if (key_valid) begin
+                    if (key_val <= 4'h9) begin
+                        if (pwd_len < 3'd6) begin
+                            input_digits[pwd_len] <= key_val;
+                            pwd_len               <= pwd_len + 3'd1;
+                            beep_key              <= 1'b1;
+                        end
+                    end else if (key_val == 4'hE) begin
+                        beep_key <= 1'b1;
+                        if (pwd_len > 3'd0) begin
+                            pwd_len <= pwd_len - 3'd1;
+                        end else begin
+                            state <= S_IDLE;
+                        end
+                    end else if (key_val == 4'hF) begin
+                        beep_key <= 1'b1;
+                        if (pwd_len == 3'd6) begin
+                            for (i = 0; i < 6; i = i + 1) begin
+                                new_pwd_digits[i] <= input_digits[i];
+                            end
+                            pwd_len       <= 3'd0;
+                            op_timeout_ms <= 14'd15000;
+                            state         <= S_CHG_CFM;
+                        end
+                    end
+                end
+            end
+
+            // --------------------------------------------------------------
+            // 【Day 6 任务】B 键安全改密 - 再次确认新密码
+            // --------------------------------------------------------------
+            S_CHG_CFM: begin
+                if (key_valid) begin
+                    if (key_val <= 4'h9) begin
+                        if (pwd_len < 3'd6) begin
+                            input_digits[pwd_len] <= key_val;
+                            pwd_len               <= pwd_len + 3'd1;
+                            beep_key              <= 1'b1;
+                        end
+                    end else if (key_val == 4'hE) begin
+                        beep_key <= 1'b1;
+                        if (pwd_len > 3'd0) begin
+                            pwd_len <= pwd_len - 3'd1;
+                        end else begin
+                            state <= S_IDLE;
+                        end
+                    end else if (key_val == 4'hF) begin
+                        beep_key <= 1'b1;
+                        if (pwd_len == 3'd6) begin
+                            if (assembled_input == assembled_new) begin
+                                // 两次输入一致，更新密码成功！
+                                current_pwd <= assembled_input;
+                                pwd_changed <= 1'b1;
+                                beep_succ   <= 1'b1;
+                                ms_timer    <= 12'd1500;
+                                pwd_len     <= 3'd0;
+                                state       <= S_OP_DONE;
+                            end else begin
+                                beep_err <= 1'b1;
+                                ms_timer <= 12'd1500;
+                                pwd_len  <= 3'd0;
+                                state    <= S_ERROR;
+                            end
+                        end
+                    end
+                end
+            end
+
+            // --------------------------------------------------------------
+            // 【Day 6 任务】设置/修改成功提示态 (保持 1.5 秒后回待机)
+            // --------------------------------------------------------------
+            S_OP_DONE: begin
+                if (tick_1k) begin
+                    if (ms_timer > 12'd0) begin
+                        ms_timer <= ms_timer - 12'd1;
+                    end else begin
+                        state <= S_IDLE;
                     end
                 end
             end
