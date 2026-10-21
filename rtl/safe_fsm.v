@@ -25,6 +25,7 @@ module safe_fsm #(
     // 键盘扫描模块交互输入
     input  wire [3:0]  key_val,        // 按键键值 (0x0~0x9:数字, 0xE:*, 0xF:#)
     input  wire        key_valid,      // 消抖后单周期按键有效脉冲
+    input [23:0] active,
     
     // 业务状态输出 (供 OLED、数码管、LED 驱动)
     output reg  [2:0]  state_code,     // 0:IDLE, 1:INPUT, 2:SUCCESS, 3:ERROR, 4:LOCKED
@@ -170,7 +171,7 @@ always @(posedge clk or negedge rst_n) begin
             // --------------------------------------------------------------
             S_CHECK: begin
                 if (pwd_len == 3'd6) begin
-                    if (assembled_input == DEFAULT_PWD) begin
+                    if (assembled_input == active) begin
                         // 常规密码匹配成功！
                         err_count <= 2'd0;
                         unlock_en <= 1'b1;
