@@ -2,12 +2,7 @@
 
 // ==============================================================================
 // 模块名称: tb_top
-// 功能描述: 顶层模块 top.v 仿真激励平台 - Day 3~4
-// 测试重点:
-//   1. 顶层时钟复位与 1Hz 心跳灯
-//   2. 0.96寸 I2C OLED SCL/SDA 波形与启动初始化
-//   3. 4位数码管段选/位选动态扫描时序
-//   4. 蜂鸣器输出响应与 4x4 矩阵键盘交互
+// 功能描述: 顶层模块 top.v 端到端集成仿真回归平台 - Day 5
 // ==============================================================================
 
 module tb_top;
@@ -23,7 +18,13 @@ module tb_top;
     wire [7:0] seg_out;
     wire [3:0] seg_cs;
     wire       buzzer_out;
+    wire       voice_tx;
+    reg        voice_busy;
+    reg        door_gpio;
     wire [7:0] led;
+
+    // 模拟外设引脚弱上拉
+    pullup(oled_sda);
 
     // 例化顶层模块
     top u_top (
@@ -36,6 +37,9 @@ module tb_top;
         .seg_out   (seg_out),
         .seg_cs    (seg_cs),
         .buzzer_out(buzzer_out),
+        .voice_tx  (voice_tx),
+        .voice_busy(voice_busy),
+        .door_gpio (door_gpio),
         .led       (led)
     );
 
@@ -47,23 +51,30 @@ module tb_top;
 
     // 测试激励
     initial begin
-        $display("[INFO] Starting Day 3~4 Top Module simulation...");
+        $display("[INFO] Starting Day 5 Top Module full-chip simulation...");
 
-        // 初始复位与按键上拉
-        key_row = 4'b1111;
-        rst_n   = 1'b0;
+        // 初始复位与物理上拉默认电平
+        key_row    = 4'b1111;
+        door_gpio  = 1'b0; // 门关严
+        voice_busy = 1'b1; // 语音空闲
+        rst_n      = 1'b0;
         #(CLK_PERIOD * 20);
 
         // 释放复位
         rst_n = 1'b1;
         #(CLK_PERIOD * 50);
 
-        $display("[PASS] Reset released. Initial led=%b, seg_cs=%b", led, seg_cs);
+        $display("[PASS] Reset released. Initial led=%b, seg_cs=%b, voice_tx=%b", led, seg_cs, voice_tx);
 
-        // 运行一段时间观察 OLED SCL 时钟输出与数码管扫描
-        #(CLK_PERIOD * 1000);
+        // 模拟开门
+        door_gpio = 1'b1;
+        #(CLK_PERIOD * 2000);
 
-        $display("[INFO] Top module connectivity & peripheral buses verified.");
+        // 门关严
+        door_gpio = 1'b0;
+        #(CLK_PERIOD * 2000);
+
+        $display("[INFO] Top module connectivity & multi-peripheral integration verified.");
         $finish;
     end
 

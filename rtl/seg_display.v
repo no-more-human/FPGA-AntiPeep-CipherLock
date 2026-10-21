@@ -1,7 +1,7 @@
 // ==============================================================================
 // 工程名称: 基于 Edge AI 视觉防窥与 FPGA 硬件安全的异构智能保险箱
 // 模块名称: seg_display (板载 4 位共阴数码管动态扫描驱动模块)
-// 阶段任务: Day 3 - 板载 4 位数码管底层状态代码监控 (IDLE/INPUT/OPEN/Err/L-60)
+// 阶段任务: Day 3~5 - 板载 4 位数码管底层状态代码监控 (IDLE/INPUT/OPEN/Err/L-60)
 // 硬件平台: 安路 (Anlogic) EG4S20BG256 (段选: A4,A6,B8,E8,A7,B5,A8,C8; 位选: C9,B6,A5,A3)
 // ==============================================================================
 
@@ -64,12 +64,12 @@ function [7:0] digit_to_seg(input [3:0] num);
         4'd7: digit_to_seg = SEG_7;
         4'd8: digit_to_seg = SEG_8;
         4'd9: digit_to_seg = SEG_9;
-        default: digit_to_seg = SEG_DASH;
+        default: digit_to_seg = SEG_BLANK;
     endcase
 endfunction
 
 // --------------------------------------------------------------------------
-// 2. 状态映射到 4 位数码管显示内容
+// 2. 状态映射到 4 位显示缓冲区
 // --------------------------------------------------------------------------
 reg [7:0] seg_buf0; // 最右位 (COM4, CS[0])
 reg [7:0] seg_buf1; // 第 3 位 (COM3, CS[1])
@@ -83,7 +83,9 @@ wire [3:0] lock_tens = (lock_countdown >= 7'd60) ? 4'd6 :
                        (lock_countdown >= 7'd20) ? 4'd2 :
                        (lock_countdown >= 7'd10) ? 4'd1 : 4'd0;
 
-wire [3:0] lock_ones = lock_countdown - (lock_tens * 4'd10);
+wire [6:0] lock_tens_x10 = {lock_tens, 3'b000} + {2'b00, lock_tens, 1'b0}; // 8x + 2x = 10x (完全消除DSP)
+wire [6:0] lock_ones_7b  = lock_countdown - lock_tens_x10;
+wire [3:0] lock_ones     = lock_ones_7b[3:0];
 
 always @(*) begin
     case (state_code)

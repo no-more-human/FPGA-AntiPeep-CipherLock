@@ -1,8 +1,9 @@
 ##============================================================
 ## 保险箱密码锁 引脚约束（Anlogic Design Constraint）
 ## 依据：EG4S20引脚速查表.xlsx
-## Day 3~4: 50MHz时钟、硬件复位、8个LED、4x4矩阵键盘、
-##          0.96寸OLED屏、4位数码管、无源蜂鸣器
+## Day 3~5: 50MHz时钟、硬件复位、8个LED、4x4矩阵键盘、
+##          0.96寸OLED屏、4位数码管、无源蜂鸣器、
+##          JQ8900-16P语音播报模块、GPS-23/SW1门磁传感器
 ##============================================================
 
 ## 50MHz 系统主时钟
@@ -33,7 +34,7 @@ set_pin_assignment	{ key_col[1] }	{ LOCATION = D11; IOSTANDARD = LVCMOS33; DRIVE
 set_pin_assignment	{ key_col[2] }	{ LOCATION = C11; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
 set_pin_assignment	{ key_col[3] }	{ LOCATION = F10; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
 
-## 0.96寸 I2C OLED 显示屏接口 (SSD1306)
+## 0.96寸 I2C OLED 显示屏接口 (SSD1306, SDA 开漏带上拉)
 set_pin_assignment	{ oled_scl }	{ LOCATION = J14; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = PULLUP; }
 set_pin_assignment	{ oled_sda }	{ LOCATION = H13; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = PULLUP; }
 
@@ -55,3 +56,10 @@ set_pin_assignment	{ seg_cs[3] }	{ LOCATION = A3; IOSTANDARD = LVCMOS33; DRIVEST
 
 ## 板载无源蜂鸣器（PWM 驱动）
 set_pin_assignment	{ buzzer_out }	{ LOCATION = H11; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
+
+## JQ8900-16P 真人语音播报模块接口 (Day 5 任务)
+set_pin_assignment	{ voice_tx }	{ LOCATION = H16; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
+set_pin_assignment	{ voice_busy }	{ LOCATION = G16; IOSTANDARD = LVCMOS33; PULLTYPE = PULLUP; }
+
+## 门磁传感器检测接口 (SW1 / GPS-23 干簧管门磁双轨，引脚: A10，Day 5 任务)
+set_pin_assignment	{ door_gpio }	{ LOCATION = A10; IOSTANDARD = LVCMOS33; PULLTYPE = PULLUP; }

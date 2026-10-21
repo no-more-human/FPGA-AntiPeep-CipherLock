@@ -1,7 +1,7 @@
 // ==============================================================================
 // 工程名称: 基于 Edge AI 视觉防窥与 FPGA 硬件安全的异构智能保险箱
 // 模块名称: safe_fsm (保险箱主业务控制状态机与密码比对/输错锁定模块)
-// 阶段任务: Day 4 - 6位核心密码比对、连续输错3次锁定60秒、蜂鸣器音效联动
+// 阶段任务: Day 4~5 - 6位核心密码比对、连续输错3次锁定60秒、蜂鸣器音效联动、反挟持粘滞报警
 // 硬件平台: 安路 (Anlogic) EG4S20BG256
 // ==============================================================================
 
@@ -25,7 +25,7 @@ module safe_fsm #(
     // 键盘扫描模块交互输入
     input  wire [3:0]  key_val,        // 按键键值 (0x0~0x9:数字, 0xE:*, 0xF:#)
     input  wire        key_valid,      // 消抖后单周期按键有效脉冲
-    input [23:0] active,
+    input  wire        duress_clear,   // 外部清除反挟持粘滞报警 (预留给 PC 串口或复位)
     
     // 业务状态输出 (供 OLED、数码管、LED 驱动)
     output reg  [2:0]  state_code,     // 0:IDLE, 1:INPUT, 2:SUCCESS, 3:ERROR, 4:LOCKED
@@ -33,7 +33,7 @@ module safe_fsm #(
     output reg  [1:0]  err_count,      // 当前累计输错次数 (0~3)
     output reg  [6:0]  lock_countdown, // 锁定倒计时剩余秒数 (0~60)
     output reg         unlock_en,      // 开锁使能 (驱动舵机与成功指示)
-    output reg         duress_alarm,   // 挟持静默告警使能 (预留给 PC 串口)
+    output reg         duress_alarm,   // 挟持静默告警使能 (预留给 PC 串口，粘滞锁存)
     
     // 音效触发脉冲输出 (单周期高电平，连接 buzzer_driver)
     output reg         beep_key,       // 按键音触发
@@ -111,15 +111,19 @@ always @(posedge clk or negedge rst_n) begin
         beep_lock <= 1'b0;
         beep_succ <= 1'b0;
 
+        // 外部清除粘滞反挟持告警
+        if (duress_clear) begin
+            duress_alarm <= 1'b0;
+        end
+
         case (state)
             // --------------------------------------------------------------
             // 空闲待机态
             // --------------------------------------------------------------
             S_IDLE: begin
-                unlock_en    <= 1'b0;
-                duress_alarm <= 1'b0;
-                pwd_len      <= 3'd0;
-                ms_timer     <= 12'd0;
+                unlock_en <= 1'b0;
+                pwd_len   <= 3'd0;
+                ms_timer  <= 12'd0;
                 
                 if (key_valid) begin
                     if (key_val <= 4'h9) begin
@@ -159,9 +163,11 @@ always @(posedge clk or negedge rst_n) begin
                             state   <= S_IDLE; // 全部退完回待机
                         end
                     end else if (key_val == 4'hF) begin
-                        // '#' 键: 确认比对
+                        // '#' 键: 满 6 位才比对；未满 6 位仅响按键音，不计入错误次数 (P1-G 防呆)
                         beep_key <= 1'b1;
-                        state    <= S_CHECK;
+                        if (pwd_len == 3'd6) begin
+                            state <= S_CHECK;
+                        end
                     end
                 end
             end
@@ -171,7 +177,7 @@ always @(posedge clk or negedge rst_n) begin
             // --------------------------------------------------------------
             S_CHECK: begin
                 if (pwd_len == 3'd6) begin
-                    if (assembled_input == active) begin
+                    if (assembled_input == DEFAULT_PWD) begin
                         // 常规密码匹配成功！
                         err_count <= 2'd0;
                         unlock_en <= 1'b1;
@@ -179,7 +185,7 @@ always @(posedge clk or negedge rst_n) begin
                         ms_timer  <= 12'd3000; // 成功开锁保持 3 秒
                         state     <= S_SUCCESS;
                     end else if (assembled_input == DURESS_PWD) begin
-                        // 反挟持密码匹配成功！(表面开门，底层静默告警)
+                        // 反挟持密码匹配成功！(表面开门，底层静默粘滞告警 P1-I)
                         err_count    <= 2'd0;
                         unlock_en    <= 1'b1;
                         duress_alarm <= 1'b1;
@@ -204,19 +210,8 @@ always @(posedge clk or negedge rst_n) begin
                         end
                     end
                 end else begin
-                    // 位数不足 6 位按确认，判定为输入错误
-                    if (err_count >= 2'd2) begin
-                        err_count      <= 2'd3;
-                        lock_countdown <= LOCK_TIMEOUT_SEC;
-                        sec_tick_cnt   <= 10'd0;
-                        beep_lock      <= 1'b1;
-                        state          <= S_LOCKED;
-                    end else begin
-                        err_count <= err_count + 2'd1;
-                        beep_err  <= 1'b1;
-                        ms_timer  <= 12'd1500;
-                        state     <= S_ERROR;
-                    end
+                    // 安全网分支 (正常流转由 S_INPUT 拦截)
+                    state <= S_INPUT;
                 end
             end
 
@@ -228,10 +223,9 @@ always @(posedge clk or negedge rst_n) begin
                     if (ms_timer > 12'd0) begin
                         ms_timer <= ms_timer - 12'd1;
                     end else begin
-                        unlock_en    <= 1'b0;
-                        duress_alarm <= 1'b0;
-                        pwd_len      <= 3'd0;
-                        state        <= S_IDLE;
+                        unlock_en <= 1'b0;
+                        pwd_len   <= 3'd0;
+                        state     <= S_IDLE;
                     end
                 end
             end

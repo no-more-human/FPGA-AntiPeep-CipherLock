@@ -1,7 +1,7 @@
 // ==============================================================================
 // 工程名称: 基于 Edge AI 视觉防窥与 FPGA 硬件安全的异构智能保险箱
 // 模块名称: buzzer_driver (无源蜂鸣器 PWM 驱动与和弦音效生成器)
-// 阶段任务: Day 4 - 无源蜂鸣器 PWM 驱动 (1kHz 按键音、4kHz 报警音、开锁和弦音)
+// 阶段任务: Day 4~5 - 无源蜂鸣器 PWM 驱动 (1kHz 按键音、4kHz 报警音、开锁和弦音，0 DSP 优化)
 // 硬件平台: 安路 (Anlogic) EG4S20BG256 (板载无源蜂鸣器 引脚: H11)
 // ==============================================================================
 
@@ -49,6 +49,7 @@ localparam S_SUCC = 3'd4;
 
 reg [2:0]  state;
 reg [11:0] duration_cnt; // 毫秒持续时间计数器 (基于 tick_1k)
+reg [7:0]  lock_phase;   // 0~199 循环相位计数器 (替代 % 200，完全消除 DSP 占用 P0-D)
 reg [31:0] target_half_cnt;
 reg        tone_en;      // 当前是否输出方波使能
 
@@ -59,6 +60,7 @@ always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
         state           <= S_IDLE;
         duration_cnt    <= 12'd0;
+        lock_phase      <= 8'd0;
         target_half_cnt <= 32'd0;
         tone_en         <= 1'b0;
     end else begin
@@ -66,6 +68,7 @@ always @(posedge clk or negedge rst_n) begin
         if (beep_lock) begin
             state           <= S_LOCK;
             duration_cnt    <= 12'd1200; // 持续 1.2 秒快速间歇报警
+            lock_phase      <= 8'd0;
             target_half_cnt <= HALF_CNT_4KHZ;
             tone_en         <= 1'b1;
         end else if (beep_succ && (state != S_LOCK)) begin
@@ -100,9 +103,14 @@ always @(posedge clk or negedge rst_n) begin
                     end
                     
                     S_LOCK: begin
-                        // 4kHz 间歇脉冲报警: 100ms 鸣响, 100ms 静音交替
+                        // 4kHz 间歇脉冲报警: 100ms 鸣响, 100ms 静音交替 (无除法器/无DSP)
                         target_half_cnt <= HALF_CNT_4KHZ;
-                        tone_en         <= ((duration_cnt % 200) < 100);
+                        tone_en         <= (lock_phase < 8'd100);
+                        if (lock_phase >= 8'd199) begin
+                            lock_phase <= 8'd0;
+                        end else begin
+                            lock_phase <= lock_phase + 8'd1;
+                        end
                     end
                     
                     S_SUCC: begin
@@ -122,8 +130,9 @@ always @(posedge clk or negedge rst_n) begin
                     end
                 endcase
             end else begin
-                state   <= S_IDLE;
-                tone_en <= 1'b0;
+                state      <= S_IDLE;
+                lock_phase <= 8'd0;
+                tone_en    <= 1'b0;
             end
         end
     end
