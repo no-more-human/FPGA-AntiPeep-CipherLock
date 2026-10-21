@@ -75,13 +75,25 @@ wire [2:0] state_code;
 wire [2:0] pwd_len;
 wire [1:0] err_count;
 wire [6:0] lock_countdown;
+wire [23:0]new;
 wire       unlock_en;
 wire       duress_alarm;
 wire       beep_key;
 wire       beep_err;
 wire       beep_lock;
 wire       beep_succ;
+wire       admin;
 
+THE_GREAT_TASQUE_MANAGER_inpassword u_OOH_GRACE_OURGRACE(
+    .clk            (clk_50M),
+    .rst_n          (rst_n),
+    .tick1k         (tick_1k),
+    .key_valid      (key_valid),
+    .kv             (key_val),
+    .sys_sta        (state_code),
+    .new            (new),
+    .admin          (admin)
+);
 safe_fsm #(
     .DEFAULT_PWD       ({4'h1, 4'h2, 4'h3, 4'h4, 4'h5, 4'h6}), // 预设密码: 123456
     .DURESS_PWD        ({4'h6, 4'h5, 4'h4, 4'h3, 4'h2, 4'h1}), // 反挟持密码: 654321
@@ -92,6 +104,7 @@ safe_fsm #(
     .tick_1k       (tick_1k),
     .key_val       (key_val),
     .key_valid     (key_valid),
+    .active        (new),
     .state_code    (state_code),
     .pwd_len       (pwd_len),
     .err_count     (err_count),
@@ -190,6 +203,6 @@ assign led[3] = (state_code == 3'd4); // 锁定状态
 assign led[4] = (state_code == 3'd3); // 错误状态
 assign led[5] = (pwd_len > 3'd0);     // 有输入
 assign led[6] = (err_count >= 2'd1);  // 输错第1次
-assign led[7] = (err_count >= 2'd2);  // 输错第2次
+assign led[7] = (err_count >= 2'd2)|admin;  // 输错第2次
 
 endmodule
