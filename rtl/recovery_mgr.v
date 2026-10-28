@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 
-`ifndef __DONT_COVER_IT_V__
-`define __DONT_COVER_IT_V__
+`ifndef __RECOVERY_MGR_V__
+`define __RECOVERY_MGR_V__
 
 // THE_GREAT_TASQUE_MANAGER_inpassword
 //

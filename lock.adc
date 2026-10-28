@@ -67,7 +67,11 @@ set_pin_assignment	{ door_gpio }	{ LOCATION = A10; IOSTANDARD = LVCMOS33; PULLTY
 ## SG90 舵机 50Hz PWM 控制信号 (引脚: F14，Day 6 任务)
 set_pin_assignment	{ servo_pwm }	{ LOCATION = F14; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
 
-# Day7 uart
+## Day 7 UART 串口通信与上位机/AI联动接口 (115200 8-N-1)
+## 默认采用 EG4S20 板载 Micro-USB 虚拟串口（板载 CH340，插 USB 线即用，免飞线与共地烦恼）
+## (备用外接 USB-TTL 模块排针引脚: uart_tx -> J13, uart_rx -> H14)
 set_pin_assignment	{ uart_tx }	{ LOCATION = D12; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
 set_pin_assignment	{ uart_rx }	{ LOCATION = F12; IOSTANDARD = LVCMOS33; PULLTYPE = PULLUP; }
+
+## 遗忘密码应急恢复通道使能拨码 (SW7, 高电平使能 D 键输入 6 位恢复码)
 set_pin_assignment	{ sw_recovery }	{ LOCATION = A14; IOSTANDARD = LVCMOS33; PULLTYPE = PULLDOWN; }

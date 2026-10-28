@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 
-`ifndef __THE_GREAT_SPAMTON_MAILMAN_V__
-`define __THE_GREAT_SPAMTON_MAILMAN_V__
+`ifndef __UART_MAILMAN_V__
+`define __UART_MAILMAN_V__
 
 // THE_GREAT_SPAMTON_MAILMAN
 //   "NOW'S YOUR CHANCE TO BE A [BIG SHOT]!!"
@@ -64,19 +64,20 @@ always @(posedge clk or negedge rst_n) begin
     else if (rx_peep)    peep_hang <= 1'b1;
 end
 
-// 远程开锁,开几秒自己关,不能一直开着不然箱子成公共储物柜
-reg [7:0] remote_sec;
+// 远程开锁,保持 REMOTE_HOLD_SEC 秒 (1kHz 节拍) 后自动闭锁
+// 修复: 原代码 remote_sec 每一拍(1ms)减 1 导致 3 毫秒即闭锁，现采用 16 位毫秒倒计时
+reg [15:0] remote_ms_cnt;
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
         remote_unlock <= 1'b0;
-        remote_sec    <= 8'd0;
+        remote_ms_cnt <= 16'd0;
     end else if (rx_remote) begin
         remote_unlock <= 1'b1;
-        remote_sec    <= REMOTE_HOLD_SEC;
+        remote_ms_cnt <= REMOTE_HOLD_SEC * 16'd1000;
     end else if (remote_unlock && tick_1k) begin
-        if (remote_sec > 8'd1) remote_sec <= remote_sec - 8'd1;
+        if (remote_ms_cnt > 16'd1) remote_ms_cnt <= remote_ms_cnt - 16'd1;
         else begin
-            remote_sec    <= 8'd0;
+            remote_ms_cnt <= 16'd0;
             remote_unlock <= 1'b0;
         end
     end
