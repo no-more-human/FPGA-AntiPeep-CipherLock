@@ -1,7 +1,7 @@
 // ==============================================================================
 // 工程名称: 基于 Edge AI 视觉防窥与 FPGA 硬件安全的异构智能保险箱
 // 模块名称: top (系统顶级入口模块)
-// 阶段任务: Day 5 - 底座加固 + JQ8900-16P语音播报 + GPS-23/SW1门磁防盗超时报警合流
+// 阶段任务: Day 7 - 加了 UART,PC 那边说的话现在能听见了
 // 硬件平台: 安路 (Anlogic) EG4S20BG256
 // ==============================================================================
 
@@ -40,7 +40,14 @@ module top(
     input  wire       door_gpio,   // 门磁输入 (引脚: A10, 内部 PULLUP, 0:闭合, 1:敞开)
     
     // 8 位板载 LED 指示灯 (高电平点亮)
-    output wire [7:0] led          // led[0]~led[7] (B14, B15, B16, C15, C16, E13, E16, F16)
+    output wire [7:0] led,         // led[0]~led[7] (B14, B15, B16, C15, C16, E13, E16, F16)
+
+    // 板载 CH340 转 USB,115200 8-N-1,插根 USB 线就是 COM 口
+    output wire       uart_tx,     // 发给 PC (D12)
+    input  wire       uart_rx,     // 收 PC 的话 (F12)
+
+    // 拨码开关 SW7,拨上去才允许走恢复码通道 (A14,内部下拉)
+    input  wire       sw_recovery
 );
 
 // --------------------------------------------------------------------------
@@ -94,6 +101,39 @@ keypad_scan #(
     .key_pressed(key_pressed)
 );
 
+// 邮差送过来的几根线,例化在第 11 节
+wire peep_hang;        // 1 就是有人在偷看
+wire remote_unlock;    // PC 让远程开的
+wire cmd_safe;         // 收到 'S' 那一拍
+wire uart_is_sending;
+wire [7:0] uart_last_byte;
+
+// 恢复码通道
+wire       rec_active;
+wire       reset_req;
+wire [2:0] rec_len;
+wire [1:0] rec_try;
+wire       rec_err;
+wire       rec_ok;
+wire       rec_locked;
+wire [7:0] rec_countdown;
+
+// 被偷看的时候、或者正在走恢复码流程的时候,主状态机都不许收键盘
+wire key_valid_fsm = key_valid && !peep_hang && !rec_active;
+
+// 恢复成功就把 safe_fsm 自己复位一下,它的 current_pwd 在复位分支里会
+// 被打回 DEFAULT_PWD(123456)。这样学长那份文件一个字都不用改
+reg rec_rst_n;
+always @(posedge clk_50M or negedge rst_sync_n) begin
+    if (!rst_sync_n)      rec_rst_n <= 1'b1;
+    else if (reset_req)   rec_rst_n <= 1'b0;
+    else                  rec_rst_n <= 1'b1;
+end
+wire safe_rst_n = rst_sync_n & rec_rst_n;
+
+// 密码开的和远程开的都算开,舵机不关心是谁给的权利
+wire unlock_all;
+
 // --------------------------------------------------------------------------
 // 3. 保险箱主业务状态机 (Day 6: 动态密码、A键录入、B键改密、C键提前闭锁)
 // --------------------------------------------------------------------------
@@ -116,11 +156,11 @@ safe_fsm #(
     .OP_TIMEOUT_SEC    (15)                                   // 15 秒无操作看门狗
 )(
     .clk           (clk_50M),
-    .rst_n         (rst_sync_n),
+    .rst_n         (safe_rst_n),
     .tick_1k       (tick_1k),
     .key_val       (key_val),
-    .key_valid     (key_valid),
-    .duress_clear  (1'b0), // 预留给后续串口指令清除
+    .key_valid     (key_valid_fsm),   // 防窥挂起时屏蔽
+    .duress_clear  (cmd_safe),        // 收到 'S' 清反挟持粘滞报警(以前是死接 1'b0)
     .state_code    (state_code),
     .pwd_len       (pwd_len),
     .err_count     (err_count),
@@ -134,6 +174,9 @@ safe_fsm #(
     .beep_succ     (beep_succ)
 );
 
+// unlock_en 上面才声明,所以合流放这儿
+assign unlock_all = unlock_en | remote_unlock;
+
 // --------------------------------------------------------------------------
 // 3.1 SG90 舵机 50Hz PWM 控制驱动 (Day 6 任务)
 // --------------------------------------------------------------------------
@@ -145,7 +188,7 @@ servo_driver #(
 )(
     .clk      (clk_50M),
     .rst_n    (rst_sync_n),
-    .unlock_en(unlock_en),
+    .unlock_en(unlock_all),
     .servo_pwm(servo_pwm)
 );
 
@@ -165,7 +208,7 @@ door_sensor #(
     .rst_n       (rst_sync_n),
     .tick_1k     (tick_1k),
     .sensor_gpio (door_gpio),
-    .unlock_en   (unlock_en),
+    .unlock_en   (unlock_all),  // 远程开的也要开始算关门时间
     .door_open   (door_open),
     .door_alert  (door_alert),
     .alert_pulse (door_alert_pulse),
@@ -185,10 +228,10 @@ always @(posedge clk_50M or negedge rst_sync_n) begin
     if (!rst_sync_n) begin
         unlock_en_d1 <= 1'b0;
     end else begin
-        unlock_en_d1 <= unlock_en;
+        unlock_en_d1 <= unlock_all;     // 远程开锁也要播
     end
 end
-wire unlock_rise = unlock_en && !unlock_en_d1;
+wire unlock_rise = unlock_all && !unlock_en_d1;
 
 // 语音调度逻辑 (单线串口防重入)
 always @(posedge clk_50M or negedge rst_sync_n) begin
@@ -251,15 +294,19 @@ buzzer_driver #(
     .rst_n     (rst_sync_n),
     .tick_1k   (tick_1k),
     .beep_key  (beep_key),
-    .beep_err  (beep_err_comb),
+    .beep_err  (beep_err_comb | rec_err),
     .beep_lock (beep_lock),
-    .beep_succ (beep_succ),
+    .beep_succ (beep_succ | rec_ok),
     .buzzer_out(buzzer_out)
 );
 
 // --------------------------------------------------------------------------
 // 7. 板载 4 位共阴数码管底层状态代码监控 (Day 3 任务)
+//    防窥的时候整块灭掉,段选清零位选全关
 // --------------------------------------------------------------------------
+wire [7:0] seg_out_raw;
+wire [3:0] seg_cs_raw;
+
 seg_display u_seg_display (
     .clk           (clk_50M),
     .rst_n         (rst_sync_n),
@@ -268,9 +315,12 @@ seg_display u_seg_display (
     .pwd_len       (pwd_len),
     .err_count     (err_count),
     .lock_countdown(lock_countdown),
-    .seg_out       (seg_out),
-    .seg_cs        (seg_cs)
+    .seg_out       (seg_out_raw),
+    .seg_cs        (seg_cs_raw)
 );
+
+assign seg_out = peep_hang ? 8'h00 : seg_out_raw;
+assign seg_cs  = peep_hang ? 4'hF  : seg_cs_raw;
 
 // --------------------------------------------------------------------------
 // 8. 0.96寸 I2C OLED 中文与字符交互显示屏 (Day 3 任务, P0-B 开漏三态接口)
@@ -313,21 +363,92 @@ end
 // --------------------------------------------------------------------------
 // led[0]: 1Hz 系统存活心跳灯 (闪烁表示 50MHz 时钟与系统存活)
 // led[1]: 实时按键物理按下指示 (按住常亮，松开熄灭)
-// led[2]: 密码核验成功开锁指示灯 (高电平点亮 3 秒)
+// led[2]: 密码核验成功开锁指示灯 (含远程开锁，高电平点亮 3 秒)
 // led[3]: 系统锁定指示灯 (连续输错 3 次后在 60s 内常亮)
 // led[4]: 错误报警指示灯 (处于密码错误状态时点亮)
 // led[5]: 门物理状态指示 (门开点亮，门关严熄灭)
 // led[6]: 输错次数累计指示 1 (输错 1 次点亮)
 // led[7]: 输错次数累计指示 2 或 门未关超时警报 (报警时常亮)
+//
+// 调串口的时候可以把这一堆全换成 assign led = uart_last_byte;
+// PC 发个 'S' = 0x53 = 0101_0011,看 8 个灯亮灭就知道收对不对,调通了再换回来
 // --------------------------------------------------------------------------
 assign led[0] = hb_led;
 assign led[1] = key_pressed;
-assign led[2] = unlock_en;
+assign led[2] = unlock_all;
 assign led[3] = (state_code == 4'd4);
 assign led[4] = (state_code == 4'd3);
 assign led[5] = door_open;
 assign led[6] = (err_count >= 2'd1);
 assign led[7] = (err_count >= 2'd2) | door_alert;
+
+// --------------------------------------------------------------------------
+// 11. 邮差上岗
+//     事件的来源都抄现成的:
+//       开锁上升沿 已经有了(unlock_rise)
+//       锁定       safe_fsm 进 S_LOCKED 时自带一拍 beep_lock
+//       反挟持     duress_alarm 是粘滞的,得自己取个沿
+//       门没关     door_alert_pulse 已经有了
+// --------------------------------------------------------------------------
+reg duress_alarm_d1;
+always @(posedge clk_50M or negedge rst_sync_n) begin
+    if (!rst_sync_n) begin
+        duress_alarm_d1 <= 1'b0;
+    end else begin
+        duress_alarm_d1 <= duress_alarm;
+    end
+end
+wire duress_rise = duress_alarm && !duress_alarm_d1;
+
+THE_GREAT_SPAMTON_MAILMAN #(
+    .CLK_FREQ(50_000_000),
+    .BAUD(115_200),
+    .REMOTE_HOLD_SEC(3)
+) u_mailman (
+    .clk          (clk_50M),
+    .rst_n        (rst_sync_n),
+    .tick_1k      (tick_1k),
+    .uart_rx      (uart_rx),
+    .uart_tx      (uart_tx),
+    .evt_unlock   (unlock_rise),
+    .evt_lock     (beep_lock),
+    .evt_duress   (duress_rise),
+    .evt_door     (door_alert_pulse),
+    .peep_hang    (peep_hang),
+    .remote_unlock(remote_unlock),
+    .cmd_safe     (cmd_safe),
+    .is_sending   (uart_is_sending),
+    .the_letter   (uart_last_byte)
+);
+
+// --------------------------------------------------------------------------
+// 12. 恢复码通道(忘了密码时用)
+//     待机按 D -> 输 6 位恢复码 -> 对了密码打回 123456
+//     sw_recovery(A14) 不拨上去,D 键完全无效
+//     默认恢复码 937158,要改就改 RECOVERY_CODE 那个 parameter
+// --------------------------------------------------------------------------
+THE_GREAT_TASQUE_MANAGER_inpassword #(
+    .RECOVERY_CODE ({4'h9, 4'h3, 4'h7, 4'h1, 4'h5, 4'h8}),
+    .MAX_TRY       (3),
+    .LOCK_SEC      (60),
+    .OP_TIMEOUT_SEC(30)
+) u_tasque (
+    .clk          (clk_50M),
+    .rst_n        (rst_sync_n),
+    .tick_1k      (tick_1k),
+    .key_val      (key_val),
+    .key_valid    (key_valid),
+    .state_code   (state_code),
+    .sw_recovery  (sw_recovery),
+    .rec_active   (rec_active),
+    .reset_req    (reset_req),
+    .rec_len      (rec_len),
+    .rec_try      (rec_try),
+    .rec_err      (rec_err),
+    .rec_ok       (rec_ok),
+    .rec_locked   (rec_locked),
+    .rec_countdown(rec_countdown)
+);
 
 endmodule
 

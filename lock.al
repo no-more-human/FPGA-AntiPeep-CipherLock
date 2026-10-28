@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Project Version="3" Minor="2" Path="F:/FPGA">
+<Project Version="3" Minor="2" Path="D:/ZACH">
     <Project_Created_Time></Project_Created_Time>
     <TD_Version>5.6.170155</TD_Version>
     <Name>lock</Name>
@@ -98,7 +98,40 @@
                     <Attr Name="CompileOrder" Val="11"/>
                 </FileInfo>
             </File>
+            <File Path="rtl/uart_rx_DONT_DELETE_IT.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="12"/>
+                </FileInfo>
+            </File>
+            <File Path="rtl/uart_tx_DONT_EREASE_IT.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="13"/>
+                </FileInfo>
+            </File>
+            <File Path="rtl/THE_GREAT##BIG##SHOT_SPAMTON_MAILMAN.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="14"/>
+                </FileInfo>
+            </File>
+            <File Path="rtl/DONT_COVER_IT.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="15"/>
+                </FileInfo>
+            </File>
         </Verilog>
+
         <ADC_FILE>
             <File Path="lock.adc">
                 <FileInfo>
