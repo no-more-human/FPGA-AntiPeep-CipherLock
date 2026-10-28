@@ -1,4 +1,6 @@
 # 《基于 Edge AI 视觉防窥与 FPGA 硬件安全的异构智能保险箱》
+
+> **PC 视觉与上位机入口**：新增 [pc/README.md](pc/README.md)，可运行人脸识别、YOLO 多人风险检测、串口联动、日志和取证。双击 pc/run_demo.bat 即可体验无硬件纯软件演示。FPGA 对接接口见 [docs/PC_FPGA_Protocol.md](docs/PC_FPGA_Protocol.md)，验证报告见 [docs/PC_Test_Report.md](docs/PC_Test_Report.md)。
 > **Heterogeneous Smart Safe with Edge AI Visual Anti-Peeping and FPGA Hardware Security**
 
 <div align="center">

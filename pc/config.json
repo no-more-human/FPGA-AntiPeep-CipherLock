@@ -1,0 +1,30 @@
+{
+  "camera": 0,
+  "width": 640,
+  "height": 480,
+  "model": "yolov8n.pt",
+  "confidence": 0.45,
+  "image_size": 320,
+  "roi": [
+    0,
+    0,
+    1,
+    1
+  ],
+  "face_threshold": 65,
+  "peep_enter_seconds": 1.5,
+  "peep_exit_seconds": 2,
+  "face_stable_seconds": 2,
+  "serial_port": "",
+  "baudrate": 115200,
+  "extended_protocol": false,
+  "alarm_display": "silent",
+  "continuous_recording": false,
+  "segment_seconds": 60,
+  "record_fps": 8,
+  "event_record_seconds": 15,
+  "record_max_gb": 2,
+  "record_retention_days": 1,
+  "data_dir": "data",
+  "cpu_threads": 4
+}

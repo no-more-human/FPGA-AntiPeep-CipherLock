@@ -1,0 +1,10 @@
+# Private local assets and runtime data
+known_faces/*
+!known_faces/README.txt
+data/
+.test-tmp/
+config.local.json
+__pycache__/
+*.py[cod]
+*.pt
+*.onnx

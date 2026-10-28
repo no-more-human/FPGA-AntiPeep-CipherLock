@@ -7,7 +7,8 @@
 pyserial>=3.5
 
 # --- 2. 图像处理与计算机视觉 ---
-opencv-python>=4.8.0.76
+opencv-contrib-python>=4.8,<6
+Pillow>=10,<14
 
 # --- 3. 深度学习与 Edge AI 目标检测 ---
 # 注意: 如果有 NVIDIA GPU，建议先按照 PyTorch 官网安装对应 CUDA 版本的 torch/torchvision:

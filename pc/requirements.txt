@@ -1,0 +1,6 @@
+# Python 3.10-3.12; use setup_pc.bat to avoid OpenCV namespace conflicts.
+pyserial>=3.5,<4
+numpy>=1.24,<3
+Pillow>=10,<14
+opencv-contrib-python>=4.8,<6
+ultralytics>=8.2,<9
