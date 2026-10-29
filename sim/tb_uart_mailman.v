@@ -45,7 +45,7 @@ module tb_uart_mailman;
     wire is_sending;
     wire [7:0] the_letter;
 
-    THE_GREAT_SPAMTON_MAILMAN #(
+    uart_mailman #(
         .CLK_FREQ(50_000_000),
         .BAUD(115_200),
         .REMOTE_HOLD_SEC(3)

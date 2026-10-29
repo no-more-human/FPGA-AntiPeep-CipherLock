@@ -2,6 +2,8 @@
 // 工程名称: 基于 Edge AI 视觉防窥与 FPGA 硬件安全的异构智能保险箱
 // 模块名称: safe_fsm (保险箱主业务控制状态机与密码比对/输错锁定/动态改密模块)
 // 阶段任务: Day 6 - 动态密码寄存器、A键首次录入、B键验旧改密、C键提前闭锁、15s超时防呆
+//           Day 9 - 日常开锁 6~16 位虚位密码: 16 级移位缓冲 + 11 组并行窗口单拍比对
+//                   (胁迫密码优先匹配); A 键仅在密码仍为出厂默认值时可用
 // 硬件平台: 安路 (Anlogic) EG4S20BG256
 // ==============================================================================
 
@@ -32,7 +34,7 @@ module safe_fsm #(
     // 业务状态输出 (供 OLED、数码管、LED 驱动，扩充为 4 位)
     // 0:IDLE, 1:INPUT, 2:SUCCESS, 3:ERROR, 4:LOCKED, 5:SET_NEW, 6:SET_CFM, 7:CHG_AUTH, 8:CHG_NEW, 9:CHG_CFM, 10:OP_DONE
     output reg  [3:0]  state_code,     
-    output reg  [2:0]  pwd_len,        // 当前输入的密码长度 (0~6)
+    output reg  [4:0]  pwd_len,        // 当前输入的密码长度 (日常开锁 0~16, 录入/改密 0~6)
     output reg  [1:0]  err_count,      // 当前累计输错次数 (0~3)
     output reg  [6:0]  lock_countdown, // 锁定倒计时剩余秒数 (0~60)
     output reg         unlock_en,      // 开锁使能 (驱动舵机与成功指示)
@@ -90,24 +92,59 @@ reg [9:0]  sec_tick_cnt;  // 0~999 ms 用于锁定倒计时每秒减 1
 reg [13:0] op_timeout_ms; // 15 秒无操作看门狗定时器 (0~15000ms)
 
 // --------------------------------------------------------------------------
-// 2. 状态映射输出 (与 seg_display / oled_driver 编码对齐)
+// 1.1 日常开锁 16 位虚位密码移位缓冲区 (Day 9)
+//     每敲一个数字整体左移 4 bit，最新数字进入 vbuf[3:0]，最多保留最近 16 位。
+//     按顺序敲入 d0 d1 d2 d3 d4 d5 后，vbuf[23:0] = {d0,d1,d2,d3,d4,d5}，
+//     与 current_pwd / DURESS_PWD 的 {高位先输} 编码天然对齐。
 // --------------------------------------------------------------------------
-always @(*) begin
-    case (state)
-        S_IDLE:     state_code = 4'd0;
-        S_INPUT:    state_code = 4'd1;
-        S_CHECK:    state_code = 4'd1;
-        S_SUCCESS:  state_code = 4'd2;
-        S_ERROR:    state_code = 4'd3;
-        S_LOCKED:   state_code = 4'd4;
-        S_SET_NEW:  state_code = 4'd5;
-        S_SET_CFM:  state_code = 4'd6;
-        S_CHG_AUTH: state_code = 4'd7;
-        S_CHG_NEW:  state_code = 4'd8;
-        S_CHG_CFM:  state_code = 4'd9;
-        S_OP_DONE:  state_code = 4'd10;
-        default:    state_code = 4'd0;
-    endcase
+reg [63:0] vbuf;
+
+// 11 组 6 位滑动窗口 (窗口 i = vbuf[i*4+23 : i*4])，在同一个时钟周期内并行比对
+// 只有完全落在已输入范围内的窗口才有效 (i + 6 <= pwd_len)，避免缓冲区残留的 0 误匹配
+wire [10:0] win_valid;
+wire [10:0] win_hit_norm;
+wire [10:0] win_hit_duress;
+
+genvar g;
+generate
+    for (g = 0; g < 11; g = g + 1) begin : g_vwin
+        assign win_valid[g]      = (pwd_len >= (g + 6));
+        assign win_hit_norm[g]   = win_valid[g] && (vbuf[g*4 +: 24] == current_pwd);
+        assign win_hit_duress[g] = win_valid[g] && (vbuf[g*4 +: 24] == DURESS_PWD);
+    end
+endgenerate
+
+wire match_norm   = |win_hit_norm;
+wire match_duress = |win_hit_duress;
+
+// A 键开荒录入门控: 只有密码仍为出厂默认值时才允许免验旧密码直接设置
+wire pwd_is_default = (current_pwd == DEFAULT_PWD);
+
+// --------------------------------------------------------------------------
+// 2. 状态映射输出 (与 seg_display / oled_driver 编码对齐)
+//    改为寄存器输出 (比 state 晚 1 拍 = 20ns)，切断 safe_fsm -> oled_driver
+//    字模译码之间的长组合路径，改善 50MHz 时序裕量
+// --------------------------------------------------------------------------
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        state_code <= 4'd0;
+    end else begin
+        case (state)
+            S_IDLE:     state_code <= 4'd0;
+            S_INPUT:    state_code <= 4'd1;
+            S_CHECK:    state_code <= 4'd1;
+            S_SUCCESS:  state_code <= 4'd2;
+            S_ERROR:    state_code <= 4'd3;
+            S_LOCKED:   state_code <= 4'd4;
+            S_SET_NEW:  state_code <= 4'd5;
+            S_SET_CFM:  state_code <= 4'd6;
+            S_CHG_AUTH: state_code <= 4'd7;
+            S_CHG_NEW:  state_code <= 4'd8;
+            S_CHG_CFM:  state_code <= 4'd9;
+            S_OP_DONE:  state_code <= 4'd10;
+            default:    state_code <= 4'd0;
+        endcase
+    end
 end
 
 // --------------------------------------------------------------------------
@@ -119,7 +156,8 @@ always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
         state          <= S_IDLE;
         current_pwd    <= DEFAULT_PWD;
-        pwd_len        <= 3'd0;
+        pwd_len        <= 5'd0;
+        vbuf           <= 64'd0;
         err_count      <= 2'd0;
         lock_countdown <= 7'd0;
         unlock_en      <= 1'b0;
@@ -172,22 +210,25 @@ always @(posedge clk or negedge rst_n) begin
             // --------------------------------------------------------------
             S_IDLE: begin
                 unlock_en <= 1'b0;
-                pwd_len   <= 3'd0;
+                pwd_len   <= 5'd0;
                 ms_timer  <= 12'd0;
                 
                 if (key_valid) begin
                     if (key_val <= 4'h9) begin
-                        // 敲击首位数字键，进入日常开锁输入态
-                        input_digits[0] <= key_val;
-                        pwd_len         <= 3'd1;
+                        // 敲击首位数字键，进入日常开锁输入态 (清空虚位缓冲，首位进入最低 nibble)
+                        vbuf            <= {60'd0, key_val};
+                        pwd_len         <= 5'd1;
                         beep_key        <= 1'b1;
                         state           <= S_INPUT;
                     end else if (key_val == 4'hA) begin
                         // 'A' 键: 新用户开荒录入通道 (直接输 6 位新密码)
-                        pwd_len       <= 3'd0;
+                        // 安全门控: 仅当密码仍为出厂默认值时可用；改过密码后只能走 B 键验旧改密
                         beep_key      <= 1'b1;
-                        op_timeout_ms <= 14'd15000;
-                        state         <= S_SET_NEW;
+                        if (pwd_is_default) begin
+                            pwd_len       <= 5'd0;
+                            op_timeout_ms <= 14'd15000;
+                            state         <= S_SET_NEW;
+                        end
                     end else if (key_val == 4'hB) begin
                         // 'B' 键: 老用户安全改密通道 (需先验旧密码)
                         pwd_len       <= 3'd0;
@@ -205,32 +246,32 @@ always @(posedge clk or negedge rst_n) begin
             end
 
             // --------------------------------------------------------------
-            // 密码输入态 (日常开锁)
+            // 密码输入态 (日常开锁，6~16 位虚位密码)
             // --------------------------------------------------------------
             S_INPUT: begin
                 if (key_valid) begin
                     if (key_val <= 4'h9) begin
-                        // 输入数字 0~9
-                        if (pwd_len < 3'd6) begin
-                            input_digits[pwd_len] <= key_val;
-                            pwd_len               <= pwd_len + 3'd1;
-                            beep_key              <= 1'b1;
-                        end else begin
-                            beep_key <= 1'b1;
+                        // 输入数字 0~9: 整体左移，新数字进入最低 nibble；
+                        // 超过 16 位后最早的数字自然移出，长度饱和在 16
+                        vbuf     <= {vbuf[59:0], key_val};
+                        beep_key <= 1'b1;
+                        if (pwd_len < 5'd16) begin
+                            pwd_len <= pwd_len + 5'd1;
                         end
                     end else if (key_val == 4'hE) begin
-                        // '*' 键: 退格一位，全部退完回待机
+                        // '*' 键: 退格一位 (右移撤销最新数字)，全部退完回待机
                         beep_key <= 1'b1;
-                        if (pwd_len > 3'd1) begin
-                            pwd_len <= pwd_len - 3'd1;
-                        end else if (pwd_len == 3'd1) begin
-                            pwd_len <= 3'd0;
+                        vbuf     <= {4'h0, vbuf[63:4]};
+                        if (pwd_len > 5'd1) begin
+                            pwd_len <= pwd_len - 5'd1;
+                        end else begin
+                            pwd_len <= 5'd0;
                             state   <= S_IDLE;
                         end
                     end else if (key_val == 4'hF) begin
-                        // '#' 键: 满 6 位才比对；未满 6 位仅提示音防呆
+                        // '#' 键: 满 6 位才比对；未满 6 位仅提示音防呆 (不计错误)
                         beep_key <= 1'b1;
-                        if (pwd_len == 3'd6) begin
+                        if (pwd_len >= 5'd6) begin
                             state <= S_CHECK;
                         end
                     end
@@ -238,44 +279,43 @@ always @(posedge clk or negedge rst_n) begin
             end
 
             // --------------------------------------------------------------
-            // 密码比对判决态 (单拍决策，比对动态 current_pwd)
+            // 密码比对判决态 (单拍决策: 11 组窗口并行比对动态 current_pwd 与胁迫密码)
+            // 胁迫密码优先: 只要任一窗口出现胁迫密码，一律走静默报警开锁
             // --------------------------------------------------------------
             S_CHECK: begin
-                if (pwd_len == 3'd6) begin
-                    if (assembled_input == current_pwd) begin
-                        // 动态密码匹配成功！
-                        err_count <= 2'd0;
-                        unlock_en <= 1'b1;
-                        beep_succ <= 1'b1;
-                        ms_timer  <= 12'd3000; // 成功开锁保持 3 秒
-                        state     <= S_SUCCESS;
-                    end else if (assembled_input == DURESS_PWD) begin
-                        // 反挟持密码匹配成功！(表面开门，底层静默粘滞告警)
-                        err_count    <= 2'd0;
-                        unlock_en    <= 1'b1;
-                        duress_alarm <= 1'b1;
-                        beep_succ    <= 1'b1;
-                        ms_timer     <= 12'd3000;
-                        state        <= S_SUCCESS;
-                    end else begin
-                        // 密码不匹配
-                        if (err_count >= 2'd2) begin
-                            // 连续累计满 3 次输错 -> 触发 60s 系统锁定！
-                            err_count      <= 2'd3;
-                            lock_countdown <= LOCK_TIMEOUT_SEC;
-                            sec_tick_cnt   <= 10'd0;
-                            beep_lock      <= 1'b1;
-                            state          <= S_LOCKED;
-                        end else begin
-                            // 输错 1 次或 2 次
-                            err_count <= err_count + 2'd1;
-                            beep_err  <= 1'b1;
-                            ms_timer  <= 12'd1500; // 错误提示保持 1.5 秒
-                            state     <= S_ERROR;
-                        end
-                    end
+                vbuf    <= 64'd0;   // 判决后立即清除缓冲区，密码不在寄存器中残留
+                pwd_len <= 5'd0;
+                if (match_duress) begin
+                    // 反挟持密码匹配成功！(表面开门，底层静默粘滞告警)
+                    err_count    <= 2'd0;
+                    unlock_en    <= 1'b1;
+                    duress_alarm <= 1'b1;
+                    beep_succ    <= 1'b1;
+                    ms_timer     <= 12'd3000;
+                    state        <= S_SUCCESS;
+                end else if (match_norm) begin
+                    // 动态密码匹配成功！
+                    err_count <= 2'd0;
+                    unlock_en <= 1'b1;
+                    beep_succ <= 1'b1;
+                    ms_timer  <= 12'd3000; // 成功开锁保持 3 秒
+                    state     <= S_SUCCESS;
                 end else begin
-                    state <= S_INPUT;
+                    // 密码不匹配
+                    if (err_count >= 2'd2) begin
+                        // 连续累计满 3 次输错 -> 触发 60s 系统锁定！
+                        err_count      <= 2'd3;
+                        lock_countdown <= LOCK_TIMEOUT_SEC;
+                        sec_tick_cnt   <= 10'd0;
+                        beep_lock      <= 1'b1;
+                        state          <= S_LOCKED;
+                    end else begin
+                        // 输错 1 次或 2 次
+                        err_count <= err_count + 2'd1;
+                        beep_err  <= 1'b1;
+                        ms_timer  <= 12'd1500; // 错误提示保持 1.5 秒
+                        state     <= S_ERROR;
+                    end
                 end
             end
 

@@ -32,7 +32,7 @@ module tb_safe_fsm;
     reg        duress_clear;
 
     wire [3:0] state_code;
-    wire [2:0] pwd_len;
+    wire [4:0] pwd_len;
     wire [1:0] err_count;
     wire [6:0] lock_countdown;
     wire       unlock_en;
@@ -291,7 +291,49 @@ module tb_safe_fsm;
         if (state_code == 4'd3 && pwd_changed == 1'b0)
             $display("[PASS] Mismatch rejected! pwd_changed=0, state ERROR.");
 
-        $display("[INFO] ALL safe_fsm Day 6 tests passed successfully!");
+        #(CLK_PERIOD * 10000);
+
+        // ==============================================================
+        // Day 9 新增用例: A 键非默认密码门控 + 6~16 位虚位密码 + 胁迫优先
+        // ==============================================================
+        $display("[TEST 15] A-Key blocked when password is no longer default ('888888')...");
+        press_key(4'hA);
+        if (state_code == 4'd0)
+            $display("[PASS] A-Key blocked after initial setup! Stays in IDLE.");
+        else
+            $display("[FAIL] A-Key should be blocked when pwd != DEFAULT_PWD, got state=%d", state_code);
+
+        $display("[TEST 16] Virtual password unlock (prefix + '888888' + suffix, 12 digits)...");
+        press_key(4'h3); press_key(4'h1); press_key(4'h4); // 前置 3 位干扰码
+        press_key(4'h8); press_key(4'h8); press_key(4'h8); // 6 位真实密码 888888
+        press_key(4'h8); press_key(4'h8); press_key(4'h8);
+        press_key(4'h5); press_key(4'h9); press_key(4'h2); // 后置 3 位干扰码
+        if (pwd_len == 5'd12)
+            $display("[PASS] Virtual input length tracked as 12.");
+        press_key(4'hF); // '#'
+        #(CLK_PERIOD * 20);
+        if (state_code == 4'd2 && unlock_en == 1'b1 && duress_alarm == 1'b0)
+            $display("[PASS] 12-digit virtual password unlocked safe! unlock_en=1");
+        else
+            $display("[FAIL] Virtual password failed: state=%d, unlock=%b", state_code, unlock_en);
+        press_key(4'hC); // 提前闭锁
+        #(CLK_PERIOD * 20);
+
+        $display("[TEST 17] Virtual duress priority (16 digits containing both '888888' and '654321')...");
+        press_key(4'h0); press_key(4'h8); press_key(4'h8); press_key(4'h8);
+        press_key(4'h8); press_key(4'h8); press_key(4'h8); press_key(4'h9);
+        press_key(4'h6); press_key(4'h5); press_key(4'h4); press_key(4'h3);
+        press_key(4'h2); press_key(4'h1); press_key(4'h7); press_key(4'h7);
+        if (pwd_len == 5'd16)
+            $display("[PASS] 16-digit max virtual buffer reached.");
+        press_key(4'hF);
+        #(CLK_PERIOD * 20);
+        if (unlock_en == 1'b1 && duress_alarm == 1'b1)
+            $display("[PASS] Duress priority verified! unlock_en=1 & duress_alarm=1");
+        else
+            $display("[FAIL] Duress priority failed: unlock=%b, duress=%b", unlock_en, duress_alarm);
+
+        $display("[INFO] ALL safe_fsm Day 6~9 tests passed successfully!");
         $finish;
     end
 

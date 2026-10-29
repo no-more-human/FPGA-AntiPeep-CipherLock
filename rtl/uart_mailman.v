@@ -3,15 +3,14 @@
 `ifndef __UART_MAILMAN_V__
 `define __UART_MAILMAN_V__
 
-// THE_GREAT_SPAMTON_MAILMAN
-//   "NOW'S YOUR CHANCE TO BE A [BIG SHOT]!!"
-// 在 FPGA 和 PC 之间跑腿送信的。收 'S''P''R',发 'U''L''D''A'。
-// 一次只能说一个字母,所以事件先挂旗子排队,发出去才落旗。
-//
-// 不碰 safe_fsm,全在外面加壳:
-//   吃它吐出来的 unlock_en / beep_lock / duress_alarm / door_alert_pulse
-//   吐 peep_hang / remote_unlock / cmd_safe 给 top
-module THE_GREAT_SPAMTON_MAILMAN #(
+// ==============================================================================
+// 工程名称: 基于 Edge AI 视觉防窥与 FPGA 硬件安全的异构智能保险箱
+// 模块名称: uart_mailman (UART 双向协议收发与事件排队调度模块)
+// 功能描述:
+//   接收 PC 上位机指令: 'S' (环境安全恢复), 'P' (防窥挂起), 'R' (远程开锁)
+//   上报 FPGA 事件状态: 'U' (开锁成功), 'L' (暴力锁定), 'D' (反挟持报警), 'A' (门未关超时)
+// ==============================================================================
+module uart_mailman #(
     parameter integer CLK_FREQ = 50_000_000,
     parameter integer BAUD = 115_200,
     parameter integer REMOTE_HOLD_SEC = 3

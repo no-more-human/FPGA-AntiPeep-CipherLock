@@ -22,4 +22,5 @@ set_output_delay -max 10.000 -clock clk_50M [get_ports {buzzer_out}]
 set_output_delay -max 10.000 -clock clk_50M [get_ports {voice_tx}]
 # 5. Day7 新增 UART 引脚约束
 set_false_path -from [get_ports {uart_rx}]
+set_false_path -from [get_ports {sw_recovery}]
 set_output_delay -max 10.000 -clock clk_50M [get_ports {uart_tx}]

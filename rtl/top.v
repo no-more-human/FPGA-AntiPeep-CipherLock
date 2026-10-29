@@ -14,13 +14,13 @@ module top(
     input  wire       clk_50M,     // 50MHz 系统主时钟 (引脚: R7)
     input  wire       rst_n,       // 全局异步复位，低电平有效 (引脚: E3，独立按键 KEY1)
     
-    // 4x4 矩阵键盘物理接口 (兼容板载微动与外接薄膜键盘)
-    input  wire [3:0] key_row,     // 4 行输入 (E10, C10, F9, D9) 内部 PULLUP
-    output wire [3:0] key_col,     // 4 列扫描输出 (E11, D11, C11, F10)
+    // 4x4 矩阵键盘物理接口 (下方排母 P4 联排直插: 8,10,12,14,16,18,20,22号针)
+    input  wire [3:0] key_row,     // 4 行输入 (L12, P15, P16, N14 -> P4-8,10,12,14) 内部 PULLUP
+    output wire [3:0] key_col,     // 4 列扫描输出 (N16, M16, L16, P14 -> P4-16,18,20,22)
     
-    // 0.96寸 I2C OLED 显示屏接口 (SSD1306)
-    output wire       oled_scl,    // I2C 串行时钟 (引脚: J14)
-    inout  wire       oled_sda,    // I2C 串行数据开漏双向 (引脚: H13)
+    // 0.96寸 I2C OLED 显示屏接口 (SSD1306, 下方排母 P4 右端联排直插: 60,58,56,54号针)
+    output wire       oled_scl,    // I2C 串行时钟 (引脚: E15 -> P4-56)
+    inout  wire       oled_sda,    // I2C 串行数据开漏双向 (引脚: D14 -> P4-54)
     
     // 板载 4 位共阴数码管接口
     output wire [7:0] seg_out,     // 段选输出 DP,G,F,E,D,C,B,A (高电平点亮: A4,A6,B8,E8,A7,B5,A8,C8)
@@ -29,8 +29,8 @@ module top(
     // 板载无源蜂鸣器接口
     output wire       buzzer_out,  // 驱动板载蜂鸣器 (引脚: H11)
     
-    // SG90 舵机 50Hz PWM 控制接口 (Day 6 任务)
-    output wire       servo_pwm,   // 驱动舵机旋转 (引脚: F14)
+    // SG90 舵机 50Hz PWM 控制接口 (下方排母 P4 最左侧联排直插: 2,4,6号针)
+    output wire       servo_pwm,   // 驱动舵机旋转 (引脚: M11 -> P4-6)
     
     // JQ8900-16P 真人语音播报模块接口 (Day 5 任务)
     output wire       voice_tx,    // 单线串口 One-Line 驱动 (引脚: H16)
@@ -74,7 +74,7 @@ wire tick_100;
 
 clk_tick #(
     .CLK_FREQ(50_000_000)
-)(
+) u_clk_tick (
     .clk     (clk_50M),
     .rst_n   (rst_sync_n),
     .tick_1k (tick_1k),
@@ -90,7 +90,7 @@ wire       key_pressed;
 
 keypad_scan #(
     .DEBOUNCE_TIME(20) // 20ms 双向滤波消抖
-)(
+) u_keypad_scan (
     .clk        (clk_50M),
     .rst_n      (rst_sync_n),
     .tick_1k    (tick_1k),
@@ -135,10 +135,10 @@ wire safe_rst_n = rst_sync_n & rec_rst_n;
 wire unlock_all;
 
 // --------------------------------------------------------------------------
-// 3. 保险箱主业务状态机 (Day 6: 动态密码、A键录入、B键改密、C键提前闭锁)
+// 3. 保险箱主业务状态机 (Day 6~9: 16位虚位密码、A键首次录入、B键改密、C键提前闭锁)
 // --------------------------------------------------------------------------
 wire [3:0] state_code;
-wire [2:0] pwd_len;
+wire [4:0] pwd_len;
 wire [1:0] err_count;
 wire [6:0] lock_countdown;
 wire       unlock_en;
@@ -154,7 +154,7 @@ safe_fsm #(
     .DURESS_PWD        ({4'h6, 4'h5, 4'h4, 4'h3, 4'h2, 4'h1}), // 反挟持密码: 654321
     .LOCK_TIMEOUT_SEC  (60),                                  // 锁定 60 秒
     .OP_TIMEOUT_SEC    (15)                                   // 15 秒无操作看门狗
-)(
+) u_safe_fsm (
     .clk           (clk_50M),
     .rst_n         (safe_rst_n),
     .tick_1k       (tick_1k),
@@ -185,7 +185,7 @@ servo_driver #(
     .PERIOD_CNT  (1_000_000), // 20ms 基准周期
     .PULSE_0_DEG (25_000),    // 0.5ms: 0度闭锁
     .PULSE_90_DEG(75_000)     // 1.5ms: 90度开锁
-)(
+) u_servo_driver (
     .clk      (clk_50M),
     .rst_n    (rst_sync_n),
     .unlock_en(unlock_all),
@@ -203,7 +203,7 @@ wire [3:0] door_open_sec;
 door_sensor #(
     .TIMEOUT_SEC  (15), // 开锁后门未关 15 秒超时报警
     .DEBOUNCE_TIME(20)  // 20ms 消抖
-)(
+) u_door_sensor (
     .clk         (clk_50M),
     .rst_n       (rst_sync_n),
     .tick_1k     (tick_1k),
@@ -222,16 +222,20 @@ reg        voice_play_en;
 reg  [7:0] voice_track_num;
 wire       voice_is_busy;
 
-// 开锁上升沿检测
+// 开锁与防窥上升沿检测
 reg unlock_en_d1;
+reg peep_hang_d1;
 always @(posedge clk_50M or negedge rst_sync_n) begin
     if (!rst_sync_n) begin
         unlock_en_d1 <= 1'b0;
+        peep_hang_d1 <= 1'b0;
     end else begin
         unlock_en_d1 <= unlock_all;     // 远程开锁也要播
+        peep_hang_d1 <= peep_hang;      // 防窥挂起上升沿触发语音 Track 7
     end
 end
 wire unlock_rise = unlock_all && !unlock_en_d1;
+wire peep_rise   = peep_hang  && !peep_hang_d1;
 
 // 语音调度逻辑 (单线串口防重入)
 always @(posedge clk_50M or negedge rst_sync_n) begin
@@ -248,6 +252,10 @@ always @(posedge clk_50M or negedge rst_sync_n) begin
             // Track 5: 密码修改/录入成功 ("修改成功")
             voice_play_en   <= 1'b1;
             voice_track_num <= 8'h05;
+        end else if (peep_rise) begin
+            // Track 7: 视觉防窥挂起 ("背后有人，请注意防窥")
+            voice_play_en   <= 1'b1;
+            voice_track_num <= 8'h07;
         end else if (door_alert_pulse) begin
             // Track 6: 门磁超时报警 ("门未关严，请关门")
             voice_play_en   <= 1'b1;
@@ -260,7 +268,7 @@ always @(posedge clk_50M or negedge rst_sync_n) begin
             // Track 3: 密码输入错误 ("密码错误")
             voice_play_en   <= 1'b1;
             voice_track_num <= 8'h03;
-        end else if (key_valid && (state_code == 4'd0) && (key_val <= 4'h9)) begin
+        end else if (key_valid_fsm && (state_code == 4'd0) && (key_val <= 4'h9)) begin
             // Track 1: 敲击首位输入唤醒 ("请输入密码")
             voice_play_en   <= 1'b1;
             voice_track_num <= 8'h01;
@@ -271,7 +279,7 @@ end
 voice_player #(
     .CLK_FREQ         (50_000_000),
     .BUSY_ACTIVE_LEVEL(1'b0)
-)(
+) u_voice_player (
     .clk       (clk_50M),
     .rst_n     (rst_sync_n),
     .tick_1k   (tick_1k),
@@ -289,7 +297,7 @@ wire beep_err_comb = beep_err | door_alert_pulse; // 门磁超时报警同步发
 
 buzzer_driver #(
     .CLK_FREQ(50_000_000)
-)(
+) u_buzzer_driver (
     .clk       (clk_50M),
     .rst_n     (rst_sync_n),
     .tick_1k   (tick_1k),
@@ -302,7 +310,7 @@ buzzer_driver #(
 
 // --------------------------------------------------------------------------
 // 7. 板载 4 位共阴数码管底层状态代码监控 (Day 3 任务)
-//    防窥的时候整块灭掉,段选清零位选全关
+//    防窥挂起时整块灭掉 (段选清零、位选全关)，采用寄存器打拍输出以打包进 IOB OREG
 // --------------------------------------------------------------------------
 wire [7:0] seg_out_raw;
 wire [3:0] seg_cs_raw;
@@ -319,21 +327,38 @@ seg_display u_seg_display (
     .seg_cs        (seg_cs_raw)
 );
 
-assign seg_out = peep_hang ? 8'h00 : seg_out_raw;
-assign seg_cs  = peep_hang ? 4'hF  : seg_cs_raw;
+reg [7:0] seg_out_r;
+reg [3:0] seg_cs_r;
+
+always @(posedge clk_50M or negedge rst_sync_n) begin
+    if (!rst_sync_n) begin
+        seg_out_r <= 8'h00;
+        seg_cs_r  <= 4'hF;
+    end else if (peep_hang) begin
+        seg_out_r <= 8'h00;
+        seg_cs_r  <= 4'hF;
+    end else begin
+        seg_out_r <= seg_out_raw;
+        seg_cs_r  <= seg_cs_raw;
+    end
+end
+
+assign seg_out = seg_out_r;
+assign seg_cs  = seg_cs_r;
 
 // --------------------------------------------------------------------------
-// 8. 0.96寸 I2C OLED 中文与字符交互显示屏 (Day 3 任务, P0-B 开漏三态接口)
+// 8. 0.96寸 I2C OLED 中文与字符交互显示屏 (Day 3~8 任务, P0-B 开漏三态接口 + 防窥熄屏横杠)
 // --------------------------------------------------------------------------
 oled_driver #(
     .CLK_FREQ(50_000_000)
-)(
+) u_oled_driver (
     .clk           (clk_50M),
     .rst_n         (rst_sync_n),
     .state_code    (state_code),
     .pwd_len       (pwd_len),
     .err_count     (err_count),
     .lock_countdown(lock_countdown),
+    .peep_hang     (peep_hang),
     .oled_scl      (oled_scl),
     .oled_sda      (oled_sda)
 );
@@ -400,7 +425,7 @@ always @(posedge clk_50M or negedge rst_sync_n) begin
 end
 wire duress_rise = duress_alarm && !duress_alarm_d1;
 
-THE_GREAT_SPAMTON_MAILMAN #(
+uart_mailman #(
     .CLK_FREQ(50_000_000),
     .BAUD(115_200),
     .REMOTE_HOLD_SEC(3)
@@ -427,12 +452,12 @@ THE_GREAT_SPAMTON_MAILMAN #(
 //     sw_recovery(A14) 不拨上去,D 键完全无效
 //     默认恢复码 937158,要改就改 RECOVERY_CODE 那个 parameter
 // --------------------------------------------------------------------------
-THE_GREAT_TASQUE_MANAGER_inpassword #(
+recovery_mgr #(
     .RECOVERY_CODE ({4'h9, 4'h3, 4'h7, 4'h1, 4'h5, 4'h8}),
     .MAX_TRY       (3),
     .LOCK_SEC      (60),
     .OP_TIMEOUT_SEC(30)
-) u_tasque (
+) u_recovery_mgr (
     .clk          (clk_50M),
     .rst_n        (rst_sync_n),
     .tick_1k      (tick_1k),

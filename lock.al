@@ -131,7 +131,6 @@
                 </FileInfo>
             </File>
         </Verilog>
-
         <ADC_FILE>
             <File Path="lock.adc">
                 <FileInfo>

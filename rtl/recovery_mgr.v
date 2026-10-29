@@ -3,17 +3,15 @@
 `ifndef __RECOVERY_MGR_V__
 `define __RECOVERY_MGR_V__
 
-// THE_GREAT_TASQUE_MANAGER_inpassword
-//
-// 忘了密码的时候用。待机按 D,输 6 位恢复码,对了就把密码打回 123456。
-// 恢复码错 3 次锁 60 秒。sw_recovery(A14) 不拨上去,D 键根本不理你。
-//
-// 恢复码就在下面 RECOVERY_CODE 那行里。忘了就来看源码,或者直接重烧板子 ——
-// 能碰到板子的人本来就有全部权限,这个模块防的是"知道密码以外的人"。
-//
-// 跟 safe_fsm 的关系:一个字节都没改。成功时出一拍 reset_req,top.v 拿它
-// 单独复位 safe_fsm,密码寄存器就在复位分支里被打回 DEFAULT_PWD。
-module THE_GREAT_TASQUE_MANAGER_inpassword #(
+// ==============================================================================
+// 工程名称: 基于 Edge AI 视觉防窥与 FPGA 硬件安全的异构智能保险箱
+// 模块名称: recovery_mgr (遗忘密码应急恢复码核验与密码重置管理模块)
+// 功能描述:
+//   当物理拨码开关 sw_recovery (SW7/A14) 拨至高电平时，待机下按 D 键进入 6 位恢复码核验；
+//   核验通过输出单周期 reset_req 脉冲将主状态机密码重置回默认值 (123456)；
+//   连续输错 3 次独立锁定恢复通道 60 秒；30 秒无操作自动超时退回待机。
+// ==============================================================================
+module recovery_mgr #(
     parameter [23:0] RECOVERY_CODE   = {4'h9, 4'h3, 4'h7, 4'h1, 4'h5, 4'h8},
     parameter integer MAX_TRY        = 3,
     parameter integer LOCK_SEC       = 60,

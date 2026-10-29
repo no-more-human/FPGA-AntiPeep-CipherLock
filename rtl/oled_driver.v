@@ -2,7 +2,7 @@
 // 工程名称: 基于 Edge AI 视觉防窥与 FPGA 硬件安全的异构智能保险箱
 // 模块名称: oled_driver (0.96寸 I2C OLED SSD1306 控制器与中文交互驱动)
 // 阶段任务: Day 3~5 - I2C主机控制器(SCL 200kHz)、开漏驱动改造、消除initial块、防死锁握手
-// 硬件平台: 安路 (Anlogic) EG4S20BG256 (OLED_SCL: J14, OLED_SDA: H13)
+// 硬件平台: 安路 (Anlogic) EG4S20BG256 (OLED_SCL: E15, OLED_SDA: D14)
 // ==============================================================================
 
 `timescale 1ns / 1ps
@@ -18,13 +18,14 @@ module oled_driver #(
     
     // 业务状态输入 (来自主状态机, 扩充为 4 位)
     input  wire [3:0]  state_code,     // 0:IDLE, 1:INPUT, 2:SUCCESS, 3:ERROR, 4:LOCKED, 5~10:SET/CHG
-    input  wire [2:0]  pwd_len,        // 已输入密码位数 (0~6)
+    input  wire [4:0]  pwd_len,        // 已输入密码位数 (日常开锁 0~16, 录入/改密 0~6)
     input  wire [1:0]  err_count,      // 累计输错次数 (0~3)
     input  wire [6:0]  lock_countdown, // 锁定倒计时剩余秒数 (0~60)
+    input  wire        peep_hang,      // 防窥挂起 (PC 'P' 置位 / 'S' 清除): 1 = 整屏熄灭仅留中间横杠
     
     // I2C 物理引脚 (P0-B: 改为开漏三态双向口，避免从机ACK对驱短路)
-    output reg         oled_scl,       // I2C 串行时钟输出 (引脚: J14)
-    inout  wire        oled_sda        // I2C 串行数据开漏双向 (引脚: H13)
+    output reg         oled_scl,       // I2C 串行时钟输出 (引脚: E15)
+    inout  wire        oled_sda        // I2C 串行数据开漏双向 (引脚: D14)
 );
 
 // --------------------------------------------------------------------------
@@ -528,21 +529,14 @@ always @(*) begin
                     pixel_out    = font_cn_pixel;
                 end
             end else begin
-                // 居中显示 8 个 8x16 字符: [ 6位掩码 ]
-                if (current_col >= 7'd32 && current_col < 7'd96) begin
-                    case ((current_col - 7'd32) >> 3)
-                        0: font_asc_code = 5'd12; // '['
-                        1: font_asc_code = (pwd_len >= 3'd1) ? 5'd14 : 5'd11; // '*' 或 '-'
-                        2: font_asc_code = (pwd_len >= 3'd2) ? 5'd14 : 5'd11;
-                        3: font_asc_code = (pwd_len >= 3'd3) ? 5'd14 : 5'd11;
-                        4: font_asc_code = (pwd_len >= 3'd4) ? 5'd14 : 5'd11;
-                        5: font_asc_code = (pwd_len >= 3'd5) ? 5'd14 : 5'd11;
-                        6: font_asc_code = (pwd_len >= 3'd6) ? 5'd14 : 5'd11;
-                        7: font_asc_code = 5'd13; // ']'
-                        default: font_asc_code = 5'd16;
-                    endcase
-                    pixel_out = font_asc_pixel;
+                // 整行 16 格 (16 x 8px = 128px)：已输入几位就显示几个 '*'，其余留空
+                // 日常开锁 6~16 位虚位密码 / 录入改密 6 位，均从最左格开始依次点亮
+                if (current_col[6:3] < pwd_len) begin
+                    font_asc_code = 5'd14; // '*'
+                end else begin
+                    font_asc_code = 5'd16; // 空格
                 end
+                pixel_out = font_asc_pixel;
             end
         end
 
@@ -624,6 +618,26 @@ always @(*) begin
 
         default: pixel_out = 8'h00;
     endcase
+
+    // 防窥挂起最高优先级抢占: 整屏熄灭，仅在中间行 (Page 4) 显示 16 格横杠 '----------------'
+    if (peep_hang) begin
+        if (current_page == 3'd4 && current_col[2:0] >= 3'd1 && current_col[2:0] <= 3'd6) begin
+            pixel_out = 8'h80;
+        end else begin
+            pixel_out = 8'h00;
+        end
+    end
+end
+
+// 像素数据打一拍寄存，截断 safe_fsm/oled_font -> i2c_data 的 17 级组合逻辑长路径
+// (I2C 每发送 1 字节需约 3500 个时钟周期，1 拍寄存延迟对刷新时序完全透明)
+reg [7:0] pixel_out_r;
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        pixel_out_r <= 8'h00;
+    end else begin
+        pixel_out_r <= pixel_out;
+    end
 end
 
 // --------------------------------------------------------------------------
@@ -753,7 +767,7 @@ always @(posedge clk or negedge rst_n) begin
                 if (!i2c_busy && !i2c_req) begin
                     i2c_req       <= 1'b1;
                     i2c_is_cmd    <= 1'b0; // 数据模式
-                    i2c_data      <= pixel_out;
+                    i2c_data      <= pixel_out_r;
                     i2c_send_stop <= 1'b1;
                     
                     if (current_col >= 7'd127) begin

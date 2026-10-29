@@ -1,15 +1,14 @@
 ##============================================================
 ## 保险箱密码锁 引脚约束（Anlogic Design Constraint）
-## 依据：EG4S20引脚速查表.xlsx
-## Day 3~5: 50MHz时钟、硬件复位、8个LED、4x4矩阵键盘、
-##          0.96寸OLED屏、4位数码管、无源蜂鸣器、
-##          JQ8900-16P语音播报模块、GPS-23/SW1门磁传感器
+## 依据：硬木课堂 DMZ-EG4S20 官方板卡引脚示意图 & docs/EG4S20_Pinout.md
+## 外接联排优化：4x4薄膜键盘(8联排)、0.96寸OLED(4联排)、SG90舵机(3联排)、语音模块(3联排)
+## 全部集中于下方排母 P4（PCB 丝印标 P4，偶数排 2~60），免飞线一排直插！
 ##============================================================
 
 ## 50MHz 系统主时钟
 set_pin_assignment	{ clk_50M }	{ LOCATION = R7; IOSTANDARD = LVCMOS33; }
 
-## 独立复位按键（KEY1/RST，低电平有效，加内部弱上拉保护）
+## 独立复位按键（KEY1/RSTn，低电平有效，加内部弱上拉保护）
 set_pin_assignment	{ rst_n }	{ LOCATION = E3; IOSTANDARD = LVCMOS33; PULLTYPE = PULLUP; }
 
 ## 8 个板载 LED（高电平点亮）
@@ -22,21 +21,23 @@ set_pin_assignment	{ led[5] }	{ LOCATION = E13; IOSTANDARD = LVCMOS33; DRIVESTRE
 set_pin_assignment	{ led[6] }	{ LOCATION = E16; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
 set_pin_assignment	{ led[7] }	{ LOCATION = F16; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
 
-## 4x4 矩阵键盘行输入（Row 0~3，按键按下为低电平，必须配置内部上拉 PULLUP）
-set_pin_assignment	{ key_row[0] }	{ LOCATION = E10; IOSTANDARD = LVCMOS33; PULLTYPE = PULLUP; }
-set_pin_assignment	{ key_row[1] }	{ LOCATION = C10; IOSTANDARD = LVCMOS33; PULLTYPE = PULLUP; }
-set_pin_assignment	{ key_row[2] }	{ LOCATION = F9;  IOSTANDARD = LVCMOS33; PULLTYPE = PULLUP; }
-set_pin_assignment	{ key_row[3] }	{ LOCATION = D9;  IOSTANDARD = LVCMOS33; PULLTYPE = PULLUP; }
+## 4x4 矩阵薄膜键盘接口（下方排母 P4 连续 8 根联排引脚: P4-8 ~ P4-22）
+## 行输入（Row 0~3 -> 薄膜键盘 Pin 1~4，对应 P4 的 8, 10, 12, 14 针，配置内部上拉 PULLUP）
+set_pin_assignment	{ key_row[0] }	{ LOCATION = L12; IOSTANDARD = LVCMOS33; PULLTYPE = PULLUP; }
+set_pin_assignment	{ key_row[1] }	{ LOCATION = P15; IOSTANDARD = LVCMOS33; PULLTYPE = PULLUP; }
+set_pin_assignment	{ key_row[2] }	{ LOCATION = P16; IOSTANDARD = LVCMOS33; PULLTYPE = PULLUP; }
+set_pin_assignment	{ key_row[3] }	{ LOCATION = N14; IOSTANDARD = LVCMOS33; PULLTYPE = PULLUP; }
 
-## 4x4 矩阵键盘列扫描输出（Col 0~3，轮流输出低电平）
-set_pin_assignment	{ key_col[0] }	{ LOCATION = E11; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
-set_pin_assignment	{ key_col[1] }	{ LOCATION = D11; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
-set_pin_assignment	{ key_col[2] }	{ LOCATION = C11; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
-set_pin_assignment	{ key_col[3] }	{ LOCATION = F10; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
+## 列扫描输出（Col 0~3 -> 薄膜键盘 Pin 5~8，对应 P4 的 16, 18, 20, 22 针，轮流输出低电平）
+## (注: 板载白色按钮原管脚为 Row: E10,C10,F9,D9 / Col: E11,D11,C11,F10)
+set_pin_assignment	{ key_col[0] }	{ LOCATION = N16; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
+set_pin_assignment	{ key_col[1] }	{ LOCATION = M16; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
+set_pin_assignment	{ key_col[2] }	{ LOCATION = L16; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
+set_pin_assignment	{ key_col[3] }	{ LOCATION = P14; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
 
-## 0.96寸 I2C OLED 显示屏接口 (SSD1306, SDA 开漏带上拉)
-set_pin_assignment	{ oled_scl }	{ LOCATION = J14; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = PULLUP; }
-set_pin_assignment	{ oled_sda }	{ LOCATION = H13; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = PULLUP; }
+## 0.96寸 I2C OLED 显示屏接口（下方排母 P4 最右端 4 联排: P4-60=3V3, P4-58=GND, P4-56=SCL, P4-54=SDA）
+set_pin_assignment	{ oled_scl }	{ LOCATION = E15; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = PULLUP; }
+set_pin_assignment	{ oled_sda }	{ LOCATION = D14; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = PULLUP; }
 
 ## 板载 4 位共阴数码管段选（A~G, DP，高电平点亮）
 set_pin_assignment	{ seg_out[0] }	{ LOCATION = A4; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
@@ -57,19 +58,18 @@ set_pin_assignment	{ seg_cs[3] }	{ LOCATION = A3; IOSTANDARD = LVCMOS33; DRIVEST
 ## 板载无源蜂鸣器（PWM 驱动）
 set_pin_assignment	{ buzzer_out }	{ LOCATION = H11; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
 
-## JQ8900-16P 真人语音播报模块接口 (Day 5 任务)
+## JQ8900-16P 真人语音播报模块接口（下方排母 P4 联排: P4-46=TX(H16), P4-44=GND, P4-42=BUSY(G16)）
 set_pin_assignment	{ voice_tx }	{ LOCATION = H16; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
 set_pin_assignment	{ voice_busy }	{ LOCATION = G16; IOSTANDARD = LVCMOS33; PULLTYPE = PULLUP; }
 
-## 门磁传感器检测接口 (SW1 / GPS-23 干簧管门磁双轨，引脚: A10，Day 5 任务)
+## 门磁传感器检测接口 (板载 SW1 拨动开关 / 外接 GPS-23 干簧管门磁，引脚: A10)
 set_pin_assignment	{ door_gpio }	{ LOCATION = A10; IOSTANDARD = LVCMOS33; PULLTYPE = PULLUP; }
 
-## SG90 舵机 50Hz PWM 控制信号 (引脚: F14，Day 6 任务)
-set_pin_assignment	{ servo_pwm }	{ LOCATION = F14; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
+## SG90 舵机 50Hz PWM 控制信号（下方排母 P4 最左侧 3 联排: P4-2=5V, P4-4=GND, P4-6=PWM(M11)）
+set_pin_assignment	{ servo_pwm }	{ LOCATION = M11; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
 
 ## Day 7 UART 串口通信与上位机/AI联动接口 (115200 8-N-1)
-## 默认采用 EG4S20 板载 Micro-USB 虚拟串口（板载 CH340，插 USB 线即用，免飞线与共地烦恼）
-## (备用外接 USB-TTL 模块排针引脚: uart_tx -> J13, uart_rx -> H14)
+## 采用 DMZ-EG4S20 板载 Type-C 虚拟串口（板载 CH340，插 USB 线即用，免外接 USB-TTL 模块）
 set_pin_assignment	{ uart_tx }	{ LOCATION = D12; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
 set_pin_assignment	{ uart_rx }	{ LOCATION = F12; IOSTANDARD = LVCMOS33; PULLTYPE = PULLUP; }
 
