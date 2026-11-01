@@ -31,11 +31,11 @@ class SimulatedFPGA:
         events = self.tick()
         if not isinstance(digits, str) or not 6 <= len(digits) <= 16 or not digits.isascii() or not digits.isdecimal():
             raise ValueError("输入应为 6~16 位数字；超长输入整串拒绝")
-        if self.duress in digits:
-            self.open_until = self.clock() + 3
-            return events + [self.event("D")]
         if self.lock_until or self.peeping:
             return events
+        if self.duress in digits:
+            self.open_until = self.clock() + 3
+            return events + [self.event("D"), self.event("U")]
         if self.normal in digits:
             self.failures = 0
             self.open_until = self.clock() + 3
@@ -43,8 +43,8 @@ class SimulatedFPGA:
         self.failures += 1
         if self.failures >= 3:
             self.lock_until = self.clock() + 60
-            return events + [self.event("E"), self.event("L")]
-        return events + [self.event("E")]
+            return events + [self.event("L")]
+        return events
 
     def command(self, command):
         events = self.tick()

@@ -29,6 +29,8 @@ module recovery_mgr #(
     output reg         reset_req,      // 一拍脉冲:叫 top 复位 safe_fsm
     output reg  [2:0]  rec_len,        // 已输几位
     output reg  [1:0]  rec_try,        // 已经错了几次
+    output reg         rec_beep_key,   // 恢复模式按键提示脉冲
+    output reg         rec_beep_err,   // 恢复模式输错/锁定提示脉冲
     output reg         rec_err,        // 错误一拍(接蜂鸣器)
     output reg         rec_ok,         // 成功一拍(接蜂鸣器/语音)
     output reg         rec_locked,     // 锁死中
@@ -78,6 +80,8 @@ always @(posedge clk or negedge rst_n) begin
         reset_req     <= 1'b0;
         rec_len       <= 3'd0;
         rec_try       <= 2'd0;
+        rec_beep_key  <= 1'b0;
+        rec_beep_err  <= 1'b0;
         rec_err       <= 1'b0;
         rec_ok        <= 1'b0;
         rec_locked    <= 1'b0;
@@ -86,10 +90,12 @@ always @(posedge clk or negedge rst_n) begin
         sec_cnt       <= 10'd0;
         wd_ms         <= 15'd0;
     end else begin
-        // 两个都是脉冲,平时清掉
-        reset_req <= 1'b0;
-        rec_err   <= 1'b0;
-        rec_ok    <= 1'b0;
+        // 脉冲信号平时清零
+        reset_req    <= 1'b0;
+        rec_beep_key <= 1'b0;
+        rec_beep_err <= 1'b0;
+        rec_err      <= 1'b0;
+        rec_ok       <= 1'b0;
 
         case (st)
         // ------------------------------------------------------------
@@ -101,9 +107,10 @@ always @(posedge clk or negedge rst_n) begin
             rec_locked <= 1'b0;
             wd_ms      <= 15'd0;
             if (sw_recovery && key_valid && (key_val == K_D) && (state_code == 4'd0)) begin
-                rec_active <= 1'b1;
-                rec_try    <= 2'd0;
-                wd_ms      <= OP_TIMEOUT_SEC * 1000;
+                rec_active   <= 1'b1;
+                rec_beep_key <= 1'b1;
+                rec_try      <= 2'd0;
+                wd_ms        <= OP_TIMEOUT_SEC * 1000;
                 buf0 <= 4'h0; buf1 <= 4'h0; buf2 <= 4'h0;
                 buf3 <= 4'h0; buf4 <= 4'h0; buf5 <= 4'h0;
                 st <= S_CODE;
@@ -120,10 +127,11 @@ always @(posedge clk or negedge rst_n) begin
             end else if (tick_1k) begin
                 if (wd_ms > 15'd0) wd_ms <= wd_ms - 15'd1;
                 else begin
-                    rec_active <= 1'b0;
-                    rec_len    <= 3'd0;
-                    rec_err    <= 1'b1;
-                    st         <= S_IDLE;
+                    rec_active   <= 1'b0;
+                    rec_len      <= 3'd0;
+                    rec_beep_err <= 1'b1;
+                    rec_err      <= 1'b1;
+                    st           <= S_IDLE;
                 end
             end
 
@@ -131,10 +139,12 @@ always @(posedge clk or negedge rst_n) begin
                 if (key_val <= 4'h9) begin
                     if (rec_len < 3'd6) begin
                         put_digit(rec_len, key_val);
-                        rec_len <= rec_len + 3'd1;
+                        rec_len      <= rec_len + 3'd1;
+                        rec_beep_key <= 1'b1;
                     end
                 end
                 else if (key_val == K_STAR) begin
+                    rec_beep_key <= 1'b1;
                     if (rec_len > 3'd0) begin
                         rec_len <= rec_len - 3'd1;     // 退一位
                     end else begin
@@ -143,6 +153,7 @@ always @(posedge clk or negedge rst_n) begin
                     end
                 end
                 else if (key_val == K_HASH) begin
+                    rec_beep_key <= 1'b1;
                     if (rec_len == 3'd6) begin
                         if (code_in == RECOVERY_CODE) begin
                             rec_ok     <= 1'b1;
@@ -152,8 +163,9 @@ always @(posedge clk or negedge rst_n) begin
                             ms_timer   <= 12'd1500;
                             st         <= S_GOOD;
                         end else begin
-                            rec_err <= 1'b1;
-                            rec_len <= 3'd0;
+                            rec_beep_err <= 1'b1;
+                            rec_err      <= 1'b1;
+                            rec_len      <= 3'd0;
                             if (rec_try >= (MAX_TRY - 1)) begin
                                 rec_countdown <= LOCK_SEC;
                                 sec_cnt       <= 10'd0;

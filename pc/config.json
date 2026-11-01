@@ -12,8 +12,9 @@
     1
   ],
   "face_threshold": 65,
-  "peep_enter_seconds": 1.5,
-  "peep_exit_seconds": 2,
+  "min_person_height_ratio": 0.25,
+  "peep_enter_seconds": 0.8,
+  "peep_exit_seconds": 1.2,
   "face_stable_seconds": 2,
   "serial_port": "",
   "baudrate": 115200,

@@ -30,6 +30,7 @@ module tb_safe_fsm;
     reg  [3:0] key_val;
     reg        key_valid;
     reg        duress_clear;
+    reg        peep_hang;
 
     wire [3:0] state_code;
     wire [4:0] pwd_len;
@@ -37,6 +38,8 @@ module tb_safe_fsm;
     wire [6:0] lock_countdown;
     wire       unlock_en;
     wire       duress_alarm;
+    wire       duress_trig;
+    wire       lock_timeout_pulse;
     wire       pwd_changed;
     wire       beep_key;
     wire       beep_err;
@@ -49,23 +52,26 @@ module tb_safe_fsm;
         .DURESS_PWD      ({4'h6, 4'h5, 4'h4, 4'h3, 4'h2, 4'h1}),
         .LOCK_TIMEOUT_SEC(3)
     ) u_fsm (
-        .clk           (clk),
-        .rst_n         (rst_n),
-        .tick_1k       (tick_1k),
-        .key_val       (key_val),
-        .key_valid     (key_valid),
-        .duress_clear  (duress_clear),
-        .state_code    (state_code),
-        .pwd_len       (pwd_len),
-        .err_count     (err_count),
-        .lock_countdown(lock_countdown),
-        .unlock_en     (unlock_en),
-        .duress_alarm  (duress_alarm),
-        .pwd_changed   (pwd_changed),
-        .beep_key      (beep_key),
-        .beep_err      (beep_err),
-        .beep_lock     (beep_lock),
-        .beep_succ     (beep_succ)
+        .clk               (clk),
+        .rst_n             (rst_n),
+        .tick_1k           (tick_1k),
+        .key_val           (key_val),
+        .key_valid         (key_valid),
+        .duress_clear      (duress_clear),
+        .peep_hang         (peep_hang),
+        .state_code        (state_code),
+        .pwd_len           (pwd_len),
+        .err_count         (err_count),
+        .lock_countdown    (lock_countdown),
+        .unlock_en         (unlock_en),
+        .duress_alarm      (duress_alarm),
+        .duress_trig       (duress_trig),
+        .lock_timeout_pulse(lock_timeout_pulse),
+        .pwd_changed       (pwd_changed),
+        .beep_key          (beep_key),
+        .beep_err          (beep_err),
+        .beep_lock         (beep_lock),
+        .beep_succ         (beep_succ)
     );
 
     // 产生时钟
@@ -95,12 +101,21 @@ module tb_safe_fsm;
         end
     endtask
 
+    // 监控单拍脉冲计数
+    integer duress_trig_cnt = 0;
+    integer lock_to_cnt     = 0;
+    always @(posedge clk) begin
+        if (duress_trig)        duress_trig_cnt = duress_trig_cnt + 1;
+        if (lock_timeout_pulse) lock_to_cnt     = lock_to_cnt + 1;
+    end
+
     initial begin
         $display("[INFO] Starting safe_fsm Testbench (Day 6)...");
         rst_n        = 1'b0;
         key_val      = 4'h0;
         key_valid    = 1'b0;
         duress_clear = 1'b0;
+        peep_hang    = 1'b0;
         #(CLK_PERIOD * 20);
         rst_n        = 1'b1;
         #(CLK_PERIOD * 20);
@@ -320,6 +335,7 @@ module tb_safe_fsm;
         #(CLK_PERIOD * 20);
 
         $display("[TEST 17] Virtual duress priority (16 digits containing both '888888' and '654321')...");
+        duress_trig_cnt = 0;
         press_key(4'h0); press_key(4'h8); press_key(4'h8); press_key(4'h8);
         press_key(4'h8); press_key(4'h8); press_key(4'h8); press_key(4'h9);
         press_key(4'h6); press_key(4'h5); press_key(4'h4); press_key(4'h3);
@@ -328,12 +344,110 @@ module tb_safe_fsm;
             $display("[PASS] 16-digit max virtual buffer reached.");
         press_key(4'hF);
         #(CLK_PERIOD * 20);
-        if (unlock_en == 1'b1 && duress_alarm == 1'b1)
-            $display("[PASS] Duress priority verified! unlock_en=1 & duress_alarm=1");
+        if (unlock_en == 1'b1 && duress_alarm == 1'b1 && duress_trig_cnt == 1)
+            $display("[PASS] Duress priority & duress_trig pulse verified! unlock_en=1 & duress_alarm=1");
         else
-            $display("[FAIL] Duress priority failed: unlock=%b, duress=%b", unlock_en, duress_alarm);
+            $display("[FAIL] Duress priority failed: unlock=%b, duress=%b, trig_cnt=%0d", unlock_en, duress_alarm, duress_trig_cnt);
+        press_key(4'hC);
+        #(CLK_PERIOD * 20);
 
-        $display("[INFO] ALL safe_fsm Day 6~9 tests passed successfully!");
+        // ==============================================================
+        // Revision 增量回归测试: 重复反挟持脉冲、防窥保留反挟持、锁定期反挟持、改密黑名单
+        // ==============================================================
+        $display("[TEST 18] Repeated duress trigger when duress_alarm is already 1...");
+        press_key(4'h6); press_key(4'h5); press_key(4'h4);
+        press_key(4'h3); press_key(4'h2); press_key(4'h1);
+        press_key(4'hF);
+        #(CLK_PERIOD * 20);
+        if (unlock_en == 1'b1 && duress_trig_cnt == 2)
+            $display("[PASS] Repeated duress produced 2nd duress_trig pulse even when duress_alarm==1!");
+        else
+            $display("[FAIL] Repeated duress failed: trig_cnt=%0d", duress_trig_cnt);
+        press_key(4'hC);
+        #(CLK_PERIOD * 20);
+
+        $display("[TEST 19] Anti-peeping (peep_hang=1): blocks normal password & A/B, allows duress...");
+        peep_hang = 1'b1;
+        press_key(4'hB);
+        if (state_code == 4'd0)
+            $display("[PASS] B-key blocked under peep_hang=1.");
+        else
+            $display("[FAIL] B-key not blocked under peep_hang=1, state=%d", state_code);
+
+        // 防窥下输入正确密码 888888 应被拒绝开锁
+        press_key(4'h8); press_key(4'h8); press_key(4'h8);
+        press_key(4'h8); press_key(4'h8); press_key(4'h8);
+        press_key(4'hF);
+        #(CLK_PERIOD * 20);
+        if (unlock_en == 1'b0 && state_code == 4'd3)
+            $display("[PASS] Normal password rejected under peep_hang=1!");
+        else
+            $display("[FAIL] Normal password should be rejected under peep_hang=1, unlock=%b, state=%d", unlock_en, state_code);
+        #(CLK_PERIOD * 10000);
+
+        // 防窥下输入反挟持密码 654321 仍能开锁并打パルス
+        press_key(4'h6); press_key(4'h5); press_key(4'h4);
+        press_key(4'h3); press_key(4'h2); press_key(4'h1);
+        press_key(4'hF);
+        #(CLK_PERIOD * 20);
+        if (unlock_en == 1'b1 && duress_trig_cnt == 3)
+            $display("[PASS] Duress password unlocked & triggered under peep_hang=1!");
+        else
+            $display("[FAIL] Duress under peep_hang=1 failed: unlock=%b, trig_cnt=%0d", unlock_en, duress_trig_cnt);
+        peep_hang = 1'b0;
+        press_key(4'hC);
+        #(CLK_PERIOD * 20);
+
+        $display("[TEST 20] Duress emergency unlock during S_LOCKED...");
+        // 连续输错 3 次进入 S_LOCKED
+        repeat (3) begin
+            press_key(4'h0); press_key(4'h0); press_key(4'h0);
+            press_key(4'h0); press_key(4'h0); press_key(4'h0);
+            press_key(4'hF);
+            #(CLK_PERIOD * 10000);
+        end
+        // 注意第 3 次输错立刻进 S_LOCKED，上面多等了 10000 拍，重新检查或触发锁定
+        if (state_code != 4'd4) begin
+            press_key(4'h0); press_key(4'h0); press_key(4'h0);
+            press_key(4'h0); press_key(4'h0); press_key(4'h0);
+            press_key(4'hF);
+            #(CLK_PERIOD * 20);
+        end
+        // 在 S_LOCKED 期间输入带虚位前缀的反挟持密码 99654321#
+        press_key(4'h9); press_key(4'h9);
+        press_key(4'h6); press_key(4'h5); press_key(4'h4);
+        press_key(4'h3); press_key(4'h2); press_key(4'h1);
+        press_key(4'hF);
+        #(CLK_PERIOD * 20);
+        if (state_code == 4'd2 && unlock_en == 1'b1 && duress_trig_cnt == 4)
+            $display("[PASS] Duress emergency unlock succeeded during S_LOCKED!");
+        else
+            $display("[FAIL] Duress during S_LOCKED failed: state=%d, unlock=%b, trig_cnt=%0d", state_code, unlock_en, duress_trig_cnt);
+        press_key(4'hC);
+        #(CLK_PERIOD * 20);
+
+        $display("[TEST 21] Duress password conflict rejection when changing password to '654321'...");
+        press_key(4'hB);
+        press_key(4'h8); press_key(4'h8); press_key(4'h8);
+        press_key(4'h8); press_key(4'h8); press_key(4'h8);
+        press_key(4'hF);
+        #(CLK_PERIOD * 20);
+        // 尝试将新密码设为反挟持密码 654321
+        press_key(4'h6); press_key(4'h5); press_key(4'h4);
+        press_key(4'h3); press_key(4'h2); press_key(4'h1);
+        press_key(4'hF);
+        #(CLK_PERIOD * 20);
+        if (state_code == 4'd3 && pwd_changed == 1'b0)
+            $display("[PASS] Setting password to DURESS_PWD ('654321') rejected with S_ERROR!");
+        else
+            $display("[FAIL] DURESS_PWD conflict not rejected, state=%d", state_code);
+
+        if (lock_to_cnt >= 1)
+            $display("[PASS] lock_timeout_pulse verified (count=%0d).", lock_to_cnt);
+        else
+            $display("[FAIL] lock_timeout_pulse was never asserted.");
+
+        $display("[INFO] ALL safe_fsm Day 6~9 & Revision tests passed successfully!");
         $finish;
     end
 

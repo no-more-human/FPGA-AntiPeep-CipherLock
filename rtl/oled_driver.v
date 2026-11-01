@@ -22,6 +22,11 @@ module oled_driver #(
     input  wire [1:0]  err_count,      // 累计输错次数 (0~3)
     input  wire [6:0]  lock_countdown, // 锁定倒计时剩余秒数 (0~60)
     input  wire        peep_hang,      // 防窥挂起 (PC 'P' 置位 / 'S' 清除): 1 = 整屏熄灭仅留中间横杠
+    input  wire        rec_active,     // 应急恢复模式激活状态
+    input  wire [2:0]  rec_len,        // 应急恢复模式当前输入长度
+    input  wire        rec_locked,     // 应急恢复模式锁定状态
+    input  wire [5:0]  rec_countdown,  // 应急恢复模式锁定倒计时 (0~60)
+    input  wire        door_alert,     // 门未关超时报警提示使能
     
     // I2C 物理引脚 (P0-B: 改为开漏三态双向口，避免从机ACK对驱短路)
     output reg         oled_scl,       // I2C 串行时钟输出 (引脚: E15)
@@ -275,16 +280,20 @@ reg [2:0] current_page; // 0 ~ 7
 reg [6:0] current_col;  // 0 ~ 127
 reg [7:0] pixel_out;
 
-// 倒计时十位与个位 (P2-P: 宽位中间变量清晰语法)
-wire [3:0] lock_tens = (lock_countdown >= 7'd60) ? 4'd6 :
-                       (lock_countdown >= 7'd50) ? 4'd5 :
-                       (lock_countdown >= 7'd40) ? 4'd4 :
-                       (lock_countdown >= 7'd30) ? 4'd3 :
-                       (lock_countdown >= 7'd20) ? 4'd2 :
-                       (lock_countdown >= 7'd10) ? 4'd1 : 4'd0;
+// 倒计时十位与个位 (P2-P: 宽位中间变量清晰语法，兼容恢复模式锁定倒计时)
+wire [6:0] eff_countdown = rec_locked ? {1'b0, rec_countdown} : lock_countdown;
+wire [4:0] eff_pwd_len   = rec_active ? {2'b00, rec_len} : pwd_len;
+wire       is_any_locked = (state_code == 4'd4) || rec_locked;
+
+wire [3:0] lock_tens = (eff_countdown >= 7'd60) ? 4'd6 :
+                       (eff_countdown >= 7'd50) ? 4'd5 :
+                       (eff_countdown >= 7'd40) ? 4'd4 :
+                       (eff_countdown >= 7'd30) ? 4'd3 :
+                       (eff_countdown >= 7'd20) ? 4'd2 :
+                       (eff_countdown >= 7'd10) ? 4'd1 : 4'd0;
 
 wire [6:0] lock_tens_x10 = {lock_tens, 3'b000} + {2'b00, lock_tens, 1'b0}; // 8x + 2x = 10x (完全消除DSP)
-wire [6:0] lock_ones_7b  = lock_countdown - lock_tens_x10;
+wire [6:0] lock_ones_7b  = eff_countdown - lock_tens_x10;
 wire [3:0] lock_ones     = lock_ones_7b[3:0];
 wire [3:0] remain_retries = (err_count <= 2'd2) ? (4'd3 - {2'd0, err_count}) : 4'd0;
 
@@ -302,7 +311,31 @@ always @(*) begin
         // ------------------------------------------------------------------
         3'd0, 3'd1: begin
             font_cn_byte = {current_page[0], current_col[3:0]};
-            case (state_code)
+            if (door_alert) begin // 门未关超时告警: "门锁已开启" (24~103)
+                if (current_col >= 7'd24 && current_col < 7'd104) begin
+                    case ((current_col - 7'd24) >> 4)
+                        0: font_cn_code = 6'd44; // 门
+                        1: font_cn_code = 6'd10; // 锁
+                        2: font_cn_code = 6'd17; // 已
+                        3: font_cn_code = 6'd9;  // 开
+                        4: font_cn_code = 6'd12; // 功
+                        default: font_cn_code = 6'd44;
+                    endcase
+                    pixel_out = font_cn_pixel;
+                end
+            end else if (rec_active || rec_locked) begin // 应急恢复模式: "重置旧密码" (24~103)
+                if (current_col >= 7'd24 && current_col < 7'd104) begin
+                    case ((current_col - 7'd24) >> 4)
+                        0: font_cn_code = 6'd38; // 重
+                        1: font_cn_code = 6'd34; // 置
+                        2: font_cn_code = 6'd31; // 旧
+                        3: font_cn_code = 6'd7;  // 密
+                        4: font_cn_code = 6'd8;  // 码
+                        default: font_cn_code = 6'd38;
+                    endcase
+                    pixel_out = font_cn_pixel;
+                end
+            end else case (state_code)
                 4'd5: begin // S_SET_NEW: "新用户录入" (24~103)
                     if (current_col >= 7'd24 && current_col < 7'd104) begin
                         case ((current_col - 7'd24) >> 4)
@@ -388,7 +421,43 @@ always @(*) begin
         // ------------------------------------------------------------------
         3'd2, 3'd3: begin
             font_cn_byte = {current_page[0], current_col[3:0]};
-            case (state_code)
+            if (door_alert) begin // 门未关超时告警: "请确认门锁" (24~103)
+                if (current_col >= 7'd24 && current_col < 7'd104) begin
+                    case ((current_col - 7'd24) >> 4)
+                        0: font_cn_code = 6'd4;  // 请
+                        1: font_cn_code = 6'd26; // 确
+                        2: font_cn_code = 6'd27; // 认
+                        3: font_cn_code = 6'd44; // 门
+                        4: font_cn_code = 6'd10; // 锁
+                        default: font_cn_code = 6'd4;
+                    endcase
+                    pixel_out = font_cn_pixel;
+                end
+            end else if (rec_locked) begin // 恢复锁定: "系统已锁定" (24~103)
+                if (current_col >= 7'd24 && current_col < 7'd104) begin
+                    case ((current_col - 7'd24) >> 4)
+                        0: font_cn_code = 6'd15; // 系
+                        1: font_cn_code = 6'd16; // 统
+                        2: font_cn_code = 6'd17; // 已
+                        3: font_cn_code = 6'd10; // 锁
+                        4: font_cn_code = 6'd18; // 定
+                        default: font_cn_code = 6'd15;
+                    endcase
+                    pixel_out = font_cn_pixel;
+                end
+            end else if (rec_active) begin // 应急恢复模式: "请输入密码" (24~103)
+                if (current_col >= 7'd24 && current_col < 7'd104) begin
+                    case ((current_col - 7'd24) >> 4)
+                        0: font_cn_code = 6'd4; // 请
+                        1: font_cn_code = 6'd5; // 输
+                        2: font_cn_code = 6'd6; // 入
+                        3: font_cn_code = 6'd7; // 密
+                        4: font_cn_code = 6'd8; // 码
+                        default: font_cn_code = 6'd4;
+                    endcase
+                    pixel_out = font_cn_pixel;
+                end
+            end else case (state_code)
                 4'd2: begin // 成功: "开锁成功" (32~95)
                     if (current_col >= 7'd32 && current_col < 7'd96) begin
                         case (current_col[5:4])
@@ -502,13 +571,13 @@ always @(*) begin
         // ------------------------------------------------------------------
         // Row 2 (Page 4~5): 动态交互数据行
         // 锁定态: "倒计时: XX 秒"
-        // 其他态: 居中显示 6 位掩码 "[ * * * - - - ]"
+        // 其他态: 居中显示掩码
         // ------------------------------------------------------------------
         3'd4, 3'd5: begin
             font_cn_byte  = {current_page[0], current_col[3:0]};
             font_asc_byte = {current_page[0], current_col[2:0]};
 
-            if (state_code == 4'd4) begin
+            if (is_any_locked) begin
                 if (current_col >= 7'd16 && current_col < 7'd48) begin
                     case ((current_col - 7'd16) >> 4)
                         0: font_cn_code = 6'd19; // 倒
@@ -530,8 +599,8 @@ always @(*) begin
                 end
             end else begin
                 // 整行 16 格 (16 x 8px = 128px)：已输入几位就显示几个 '*'，其余留空
-                // 日常开锁 6~16 位虚位密码 / 录入改密 6 位，均从最左格开始依次点亮
-                if (current_col[6:3] < pwd_len) begin
+                // 日常开锁 6~16 位虚位密码 / 录入改密 / 应急恢复 6 位，均从最左格开始依次点亮
+                if (current_col[6:3] < eff_pwd_len) begin
                     font_asc_code = 5'd14; // '*'
                 end else begin
                     font_asc_code = 5'd16; // 空格
@@ -547,9 +616,9 @@ always @(*) begin
             font_cn_byte  = {current_page[0], current_col[3:0]};
             font_asc_byte = {current_page[0], current_col[2:0]};
 
-            if (state_code == 4'd5 || state_code == 4'd6 ||
+            if (rec_active || state_code == 4'd5 || state_code == 4'd6 ||
                 state_code == 4'd7 || state_code == 4'd8 || state_code == 4'd9) begin
-                // 录入/改密流程底部提示: "# 确认   * 取消"
+                // 录入/改密/恢复流程底部提示: "# 确认   * 清除"
                 if (current_col >= 7'd16 && current_col < 7'd24) begin
                     font_asc_code = 5'd15; // '#'
                     pixel_out     = font_asc_pixel;
@@ -569,7 +638,7 @@ always @(*) begin
                     endcase
                     pixel_out = font_cn_pixel;
                 end
-            end else if (state_code == 4'd2) begin
+            end else if (state_code == 4'd2 || door_alert) begin
                 // 开锁成功提示: "门锁已开启" (24~103)
                 if (current_col >= 7'd24 && current_col < 7'd104) begin
                     case ((current_col - 7'd24) >> 4)
@@ -582,7 +651,7 @@ always @(*) begin
                     endcase
                     pixel_out = font_cn_pixel;
                 end
-            end else if (state_code == 4'd4) begin
+            end else if (is_any_locked) begin
                 // 锁定提示: "键盘已锁定" (24~103)
                 if (current_col >= 7'd24 && current_col < 7'd104) begin
                     case ((current_col - 7'd24) >> 4)

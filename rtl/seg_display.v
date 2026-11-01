@@ -20,6 +20,7 @@ module seg_display(
     input  wire [4:0] pwd_len,         // 当前已输入密码长度 (日常开锁 0~16, 录入/改密 0~6)
     input  wire [1:0] err_count,       // 输错次数 (0~3)
     input  wire [6:0] lock_countdown,  // 锁定剩余倒计时秒数 (0~60)
+    input  wire       door_alert,      // 门未关超时报警使能 (显示 AL-dr)
     
     // 硬件物理引脚输出
     output reg  [7:0] seg_out,         // 段选输出 DP,G,F,E,D,C,B,A (高电平点亮)
@@ -176,6 +177,13 @@ always @(*) begin
             seg_buf1 = SEG_S;
             seg_buf0 = SEG_S;
         end
+
+        4'd11: begin // 应急恢复模式: 显示 "rE-n" (前两位 rE, 后两位 -n)
+            seg_buf3 = SEG_r;
+            seg_buf2 = SEG_E;
+            seg_buf1 = SEG_DASH;
+            seg_buf0 = digit_to_seg(pwd_len[3:0]);
+        end
         
         default: begin
             seg_buf3 = SEG_DASH;
@@ -184,6 +192,14 @@ always @(*) begin
             seg_buf0 = SEG_DASH;
         end
     endcase
+
+    // 门未关超时报警最高优先级抢占: 显示 "ALdr" (AL-dr)
+    if (door_alert) begin
+        seg_buf3 = SEG_A;
+        seg_buf2 = SEG_L;
+        seg_buf1 = SEG_d;
+        seg_buf0 = SEG_r;
+    end
 end
 
 // --------------------------------------------------------------------------

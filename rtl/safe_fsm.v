@@ -30,6 +30,7 @@ module safe_fsm #(
     input  wire [3:0]  key_val,        // 按键键值 (0x0~0x9:数字, 0xA:A, 0xB:B, 0xC:C, 0xE:*, 0xF:#)
     input  wire        key_valid,      // 消抖后单周期按键有效脉冲
     input  wire        duress_clear,   // 外部清除反挟持粘滞报警 (预留给 PC 串口或复位)
+    input  wire        peep_hang,      // 视觉防窥挂起状态 (挂起下保留反挟持求救能力)
     
     // 业务状态输出 (供 OLED、数码管、LED 驱动，扩充为 4 位)
     // 0:IDLE, 1:INPUT, 2:SUCCESS, 3:ERROR, 4:LOCKED, 5:SET_NEW, 6:SET_CFM, 7:CHG_AUTH, 8:CHG_NEW, 9:CHG_CFM, 10:OP_DONE
@@ -39,6 +40,8 @@ module safe_fsm #(
     output reg  [6:0]  lock_countdown, // 锁定倒计时剩余秒数 (0~60)
     output reg         unlock_en,      // 开锁使能 (驱动舵机与成功指示)
     output reg         duress_alarm,   // 挟持静默告警使能 (预留给 PC 串口，粘滞锁存)
+    output reg         duress_trig,    // 反挟持单拍触发脉冲 (替代粘滞电平导致的二次漏发)
+    output reg         lock_timeout_pulse, // 60s 试错锁定结束单拍脉冲 (通知 PC 解锁 'T')
     output reg         pwd_changed,    // 密码成功更新单周期脉冲 (供语音播报 Track 5)
     
     // 音效触发脉冲输出 (单周期高电平，连接 buzzer_driver)
@@ -101,6 +104,8 @@ reg [63:0] vbuf;
 
 // 11 组 6 位滑动窗口 (窗口 i = vbuf[i*4+23 : i*4])，在同一个时钟周期内并行比对
 // 只有完全落在已输入范围内的窗口才有效 (i + 6 <= pwd_len)，避免缓冲区残留的 0 误匹配
+reg  [4:0]  lock_vlen; // S_LOCKED 期间用于反挟持检测的隐藏计数
+wire [4:0]  eff_vlen = (state == S_LOCKED) ? lock_vlen : pwd_len;
 wire [10:0] win_valid;
 wire [10:0] win_hit_norm;
 wire [10:0] win_hit_duress;
@@ -108,7 +113,7 @@ wire [10:0] win_hit_duress;
 genvar g;
 generate
     for (g = 0; g < 11; g = g + 1) begin : g_vwin
-        assign win_valid[g]      = (pwd_len >= (g + 6));
+        assign win_valid[g]      = (eff_vlen >= (g + 6));
         assign win_hit_norm[g]   = win_valid[g] && (vbuf[g*4 +: 24] == current_pwd);
         assign win_hit_duress[g] = win_valid[g] && (vbuf[g*4 +: 24] == DURESS_PWD);
     end
@@ -119,6 +124,9 @@ wire match_duress = |win_hit_duress;
 
 // A 键开荒录入门控: 只有密码仍为出厂默认值时才允许免验旧密码直接设置
 wire pwd_is_default = (current_pwd == DEFAULT_PWD);
+
+// 改密黑名单比对: 严禁将日常主密码设置为反挟持密码 DURESS_PWD
+wire is_duress_conflict = (assembled_input == DURESS_PWD);
 
 // --------------------------------------------------------------------------
 // 2. 状态映射输出 (与 seg_display / oled_driver 编码对齐)
@@ -154,33 +162,38 @@ integer i;
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        state          <= S_IDLE;
-        current_pwd    <= DEFAULT_PWD;
-        pwd_len        <= 5'd0;
-        vbuf           <= 64'd0;
-        err_count      <= 2'd0;
-        lock_countdown <= 7'd0;
-        unlock_en      <= 1'b0;
-        duress_alarm   <= 1'b0;
-        pwd_changed    <= 1'b0;
-        beep_key       <= 1'b0;
-        beep_err       <= 1'b0;
-        beep_lock      <= 1'b0;
-        beep_succ      <= 1'b0;
-        ms_timer       <= 12'd0;
-        sec_tick_cnt   <= 10'd0;
-        op_timeout_ms  <= 14'd0;
+        state              <= S_IDLE;
+        current_pwd        <= DEFAULT_PWD;
+        pwd_len            <= 5'd0;
+        lock_vlen          <= 5'd0;
+        vbuf               <= 64'd0;
+        err_count          <= 2'd0;
+        lock_countdown     <= 7'd0;
+        unlock_en          <= 1'b0;
+        duress_alarm       <= 1'b0;
+        duress_trig        <= 1'b0;
+        lock_timeout_pulse <= 1'b0;
+        pwd_changed        <= 1'b0;
+        beep_key           <= 1'b0;
+        beep_err           <= 1'b0;
+        beep_lock          <= 1'b0;
+        beep_succ          <= 1'b0;
+        ms_timer           <= 12'd0;
+        sec_tick_cnt       <= 10'd0;
+        op_timeout_ms      <= 14'd0;
         for (i = 0; i < 6; i = i + 1) begin
             input_digits[i]   <= 4'h0;
             new_pwd_digits[i] <= 4'h0;
         end
     end else begin
         // 默认清除单周期脉冲
-        beep_key    <= 1'b0;
-        beep_err    <= 1'b0;
-        beep_lock   <= 1'b0;
-        beep_succ   <= 1'b0;
-        pwd_changed <= 1'b0;
+        beep_key           <= 1'b0;
+        beep_err           <= 1'b0;
+        beep_lock          <= 1'b0;
+        beep_succ          <= 1'b0;
+        pwd_changed        <= 1'b0;
+        duress_trig        <= 1'b0;
+        lock_timeout_pulse <= 1'b0;
 
         // 外部清除粘滞反挟持告警
         if (duress_clear) begin
@@ -211,6 +224,7 @@ always @(posedge clk or negedge rst_n) begin
             S_IDLE: begin
                 unlock_en <= 1'b0;
                 pwd_len   <= 5'd0;
+                lock_vlen <= 5'd0;
                 ms_timer  <= 12'd0;
                 
                 if (key_valid) begin
@@ -220,8 +234,8 @@ always @(posedge clk or negedge rst_n) begin
                         pwd_len         <= 5'd1;
                         beep_key        <= 1'b1;
                         state           <= S_INPUT;
-                    end else if (key_val == 4'hA) begin
-                        // 'A' 键: 新用户开荒录入通道 (直接输 6 位新密码)
+                    end else if (key_val == 4'hA && !peep_hang) begin
+                        // 'A' 键: 新用户开荒录入通道 (直接输 6 位新密码)，防窥挂起时屏蔽
                         // 安全门控: 仅当密码仍为出厂默认值时可用；改过密码后只能走 B 键验旧改密
                         beep_key      <= 1'b1;
                         if (pwd_is_default) begin
@@ -229,9 +243,9 @@ always @(posedge clk or negedge rst_n) begin
                             op_timeout_ms <= 14'd15000;
                             state         <= S_SET_NEW;
                         end
-                    end else if (key_val == 4'hB) begin
-                        // 'B' 键: 老用户安全改密通道 (需先验旧密码)
-                        pwd_len       <= 3'd0;
+                    end else if (key_val == 4'hB && !peep_hang) begin
+                        // 'B' 键: 老用户安全改密通道 (需先验旧密码)，防窥挂起时屏蔽
+                        pwd_len       <= 5'd0;
                         beep_key      <= 1'b1;
                         op_timeout_ms <= 14'd15000;
                         state         <= S_CHG_AUTH;
@@ -280,26 +294,34 @@ always @(posedge clk or negedge rst_n) begin
 
             // --------------------------------------------------------------
             // 密码比对判决态 (单拍决策: 11 组窗口并行比对动态 current_pwd 与胁迫密码)
-            // 胁迫密码优先: 只要任一窗口出现胁迫密码，一律走静默报警开锁
+            // 胁迫密码优先: 只要任一窗口出现胁迫密码，无条件放行并静默报警开锁
+            // 防窥挂起时: 除非匹配到 match_duress，否则一律阻断开锁并提示错误
             // --------------------------------------------------------------
             S_CHECK: begin
-                vbuf    <= 64'd0;   // 判决后立即清除缓冲区，密码不在寄存器中残留
-                pwd_len <= 5'd0;
+                vbuf      <= 64'd0;   // 判决后立即清除缓冲区，密码不在寄存器中残留
+                pwd_len   <= 5'd0;
+                lock_vlen <= 5'd0;
                 if (match_duress) begin
-                    // 反挟持密码匹配成功！(表面开门，底层静默粘滞告警)
+                    // 反挟持密码匹配成功！(无条件放行: 表面开门，底层静默粘滞告警 + 单拍脉冲)
                     err_count    <= 2'd0;
                     unlock_en    <= 1'b1;
                     duress_alarm <= 1'b1;
+                    duress_trig  <= 1'b1;
                     beep_succ    <= 1'b1;
                     ms_timer     <= 12'd3000;
                     state        <= S_SUCCESS;
-                end else if (match_norm) begin
-                    // 动态密码匹配成功！
+                end else if (match_norm && !peep_hang) begin
+                    // 动态密码匹配成功！(仅在无防窥挂起时允许正常开锁)
                     err_count <= 2'd0;
                     unlock_en <= 1'b1;
                     beep_succ <= 1'b1;
                     ms_timer  <= 12'd3000; // 成功开锁保持 3 秒
                     state     <= S_SUCCESS;
+                end else if (peep_hang) begin
+                    // 防窥挂起期间非反挟持密码尝试开锁: 阻断开锁并报警提示错误
+                    beep_err  <= 1'b1;
+                    ms_timer  <= 12'd1500;
+                    state     <= S_ERROR;
                 end else begin
                     // 密码不匹配
                     if (err_count >= 2'd2) begin
@@ -355,22 +377,51 @@ always @(posedge clk or negedge rst_n) begin
             end
 
             // --------------------------------------------------------------
-            // 连续输错 3 次系统锁定态 (锁定 60s，键盘彻底屏蔽)
+            // 连续输错 3 次系统锁定态 (锁定 60s，普通按键屏蔽，支持反挟持紧急求救开锁)
             // --------------------------------------------------------------
             S_LOCKED: begin
                 unlock_en <= 1'b0;
-                pwd_len   <= 3'd0;
+                pwd_len   <= 5'd0;
                 
-                if (tick_1k) begin
+                if (key_valid) begin
+                    if (key_val <= 4'h9) begin
+                        vbuf <= {vbuf[59:0], key_val};
+                        if (lock_vlen < 5'd16) begin
+                            lock_vlen <= lock_vlen + 5'd1;
+                        end
+                    end else if (key_val == 4'hE) begin
+                        vbuf <= {4'h0, vbuf[63:4]};
+                        if (lock_vlen > 5'd0) begin
+                            lock_vlen <= lock_vlen - 5'd1;
+                        end
+                    end else if (key_val == 4'hF) begin
+                        vbuf      <= 64'd0;
+                        lock_vlen <= 5'd0;
+                        if (lock_vlen >= 5'd6 && match_duress) begin
+                            // 锁定期间输入反挟持密码求救: 立即解除锁定、开门并触发静默报警！
+                            lock_countdown <= 7'd0;
+                            err_count      <= 2'd0;
+                            unlock_en      <= 1'b1;
+                            duress_alarm   <= 1'b1;
+                            duress_trig    <= 1'b1;
+                            beep_succ      <= 1'b1;
+                            ms_timer       <= 12'd3000;
+                            state          <= S_SUCCESS;
+                        end
+                    end
+                end else if (tick_1k) begin
                     if (sec_tick_cnt >= 10'd999) begin
                         sec_tick_cnt <= 10'd0;
                         if (lock_countdown > 7'd1) begin
                             lock_countdown <= lock_countdown - 7'd1;
                         end else begin
-                            // 60 秒倒计时结束，恢复系统！
-                            lock_countdown <= 7'd0;
-                            err_count      <= 2'd0;
-                            state          <= S_IDLE;
+                            // 60 秒倒计时结束，恢复系统并发送超时解锁脉冲 'T'
+                            lock_countdown     <= 7'd0;
+                            err_count          <= 2'd0;
+                            vbuf               <= 64'd0;
+                            lock_vlen          <= 5'd0;
+                            lock_timeout_pulse <= 1'b1;
+                            state              <= S_IDLE;
                         end
                     end else begin
                         sec_tick_cnt <= sec_tick_cnt + 10'd1;
@@ -398,15 +449,22 @@ always @(posedge clk or negedge rst_n) begin
                             state <= S_IDLE;
                         end
                     end else if (key_val == 4'hF) begin
-                        // '#' 键: 满 6 位后暂存新密码，推进入二次确认阶段
+                        // '#' 键: 满 6 位后暂存新密码，推进入二次确认阶段 (黑名单检查反挟持冲突)
                         beep_key <= 1'b1;
                         if (pwd_len == 3'd6) begin
-                            for (i = 0; i < 6; i = i + 1) begin
-                                new_pwd_digits[i] <= input_digits[i];
+                            if (is_duress_conflict) begin
+                                beep_err <= 1'b1;
+                                ms_timer <= 12'd1500;
+                                pwd_len  <= 3'd0;
+                                state    <= S_ERROR;
+                            end else begin
+                                for (i = 0; i < 6; i = i + 1) begin
+                                    new_pwd_digits[i] <= input_digits[i];
+                                end
+                                pwd_len       <= 3'd0;
+                                op_timeout_ms <= 14'd15000;
+                                state         <= S_SET_CFM;
                             end
-                            pwd_len       <= 3'd0;
-                            op_timeout_ms <= 14'd15000;
-                            state         <= S_SET_CFM;
                         end
                     end
                 end
@@ -433,8 +491,8 @@ always @(posedge clk or negedge rst_n) begin
                     end else if (key_val == 4'hF) begin
                         beep_key <= 1'b1;
                         if (pwd_len == 3'd6) begin
-                            if (assembled_input == assembled_new) begin
-                                // 两次输入完全一致，写入动态密码生效！
+                            if ((assembled_input == assembled_new) && !is_duress_conflict) begin
+                                // 两次输入完全一致且非反挟持黑名单密码，写入动态密码生效！
                                 current_pwd <= assembled_input;
                                 pwd_changed <= 1'b1;
                                 beep_succ   <= 1'b1;
@@ -442,7 +500,7 @@ always @(posedge clk or negedge rst_n) begin
                                 pwd_len     <= 3'd0;
                                 state       <= S_OP_DONE;
                             end else begin
-                                // 两次输入不符，提示错误并放弃
+                                // 两次输入不符或命中反挟持黑名单，提示错误并放弃
                                 beep_err <= 1'b1;
                                 ms_timer <= 12'd1500;
                                 pwd_len  <= 3'd0;
@@ -522,12 +580,19 @@ always @(posedge clk or negedge rst_n) begin
                     end else if (key_val == 4'hF) begin
                         beep_key <= 1'b1;
                         if (pwd_len == 3'd6) begin
-                            for (i = 0; i < 6; i = i + 1) begin
-                                new_pwd_digits[i] <= input_digits[i];
+                            if (is_duress_conflict) begin
+                                beep_err <= 1'b1;
+                                ms_timer <= 12'd1500;
+                                pwd_len  <= 3'd0;
+                                state    <= S_ERROR;
+                            end else begin
+                                for (i = 0; i < 6; i = i + 1) begin
+                                    new_pwd_digits[i] <= input_digits[i];
+                                end
+                                pwd_len       <= 3'd0;
+                                op_timeout_ms <= 14'd15000;
+                                state         <= S_CHG_CFM;
                             end
-                            pwd_len       <= 3'd0;
-                            op_timeout_ms <= 14'd15000;
-                            state         <= S_CHG_CFM;
                         end
                     end
                 end
@@ -554,8 +619,8 @@ always @(posedge clk or negedge rst_n) begin
                     end else if (key_val == 4'hF) begin
                         beep_key <= 1'b1;
                         if (pwd_len == 3'd6) begin
-                            if (assembled_input == assembled_new) begin
-                                // 两次输入一致，更新密码成功！
+                            if ((assembled_input == assembled_new) && !is_duress_conflict) begin
+                                // 两次输入一致且非反挟持黑名单密码，更新密码成功！
                                 current_pwd <= assembled_input;
                                 pwd_changed <= 1'b1;
                                 beep_succ   <= 1'b1;

@@ -113,13 +113,15 @@ wire       rec_active;
 wire       reset_req;
 wire [2:0] rec_len;
 wire [1:0] rec_try;
+wire       rec_beep_key;
+wire       rec_beep_err;
 wire       rec_err;
 wire       rec_ok;
 wire       rec_locked;
 wire [7:0] rec_countdown;
 
-// 被偷看的时候、或者正在走恢复码流程的时候,主状态机都不许收键盘
-wire key_valid_fsm = key_valid && !peep_hang && !rec_active;
+// 仅在正在走恢复码流程的时候屏蔽主状态机键盘；防窥挂起 peep_hang 传入 safe_fsm 内部处理，保留反挟持能力
+wire key_valid_fsm = key_valid && !rec_active;
 
 // 恢复成功就把 safe_fsm 自己复位一下,它的 current_pwd 在复位分支里会
 // 被打回 DEFAULT_PWD(123456)。这样学长那份文件一个字都不用改
@@ -143,6 +145,8 @@ wire [1:0] err_count;
 wire [6:0] lock_countdown;
 wire       unlock_en;
 wire       duress_alarm;
+wire       duress_trig;
+wire       lock_timeout_pulse;
 wire       pwd_changed;
 wire       beep_key;
 wire       beep_err;
@@ -155,23 +159,26 @@ safe_fsm #(
     .LOCK_TIMEOUT_SEC  (60),                                  // 锁定 60 秒
     .OP_TIMEOUT_SEC    (15)                                   // 15 秒无操作看门狗
 ) u_safe_fsm (
-    .clk           (clk_50M),
-    .rst_n         (safe_rst_n),
-    .tick_1k       (tick_1k),
-    .key_val       (key_val),
-    .key_valid     (key_valid_fsm),   // 防窥挂起时屏蔽
-    .duress_clear  (cmd_safe),        // 收到 'S' 清反挟持粘滞报警(以前是死接 1'b0)
-    .state_code    (state_code),
-    .pwd_len       (pwd_len),
-    .err_count     (err_count),
-    .lock_countdown(lock_countdown),
-    .unlock_en     (unlock_en),
-    .duress_alarm  (duress_alarm),
-    .pwd_changed   (pwd_changed),
-    .beep_key      (beep_key),
-    .beep_err      (beep_err),
-    .beep_lock     (beep_lock),
-    .beep_succ     (beep_succ)
+    .clk               (clk_50M),
+    .rst_n             (safe_rst_n),
+    .tick_1k           (tick_1k),
+    .key_val           (key_val),
+    .key_valid         (key_valid_fsm),
+    .duress_clear      (cmd_safe),        // 收到 'S' 清反挟持粘滞报警
+    .peep_hang         (peep_hang),       // 防窥挂起输入，内部保留反挟持求救
+    .state_code        (state_code),
+    .pwd_len           (pwd_len),
+    .err_count         (err_count),
+    .lock_countdown    (lock_countdown),
+    .unlock_en         (unlock_en),
+    .duress_alarm      (duress_alarm),
+    .duress_trig       (duress_trig),
+    .lock_timeout_pulse(lock_timeout_pulse),
+    .pwd_changed       (pwd_changed),
+    .beep_key          (beep_key),
+    .beep_err          (beep_err),
+    .beep_lock         (beep_lock),
+    .beep_succ         (beep_succ)
 );
 
 // unlock_en 上面才声明,所以合流放这儿
@@ -234,8 +241,10 @@ always @(posedge clk_50M or negedge rst_sync_n) begin
         peep_hang_d1 <= peep_hang;      // 防窥挂起上升沿触发语音 Track 7
     end
 end
-wire unlock_rise = unlock_all && !unlock_en_d1;
-wire peep_rise   = peep_hang  && !peep_hang_d1;
+wire unlock_rise  = unlock_all  && !unlock_en_d1;
+wire relock_pulse = !unlock_all && unlock_en_d1;
+wire peep_rise    = peep_hang   && !peep_hang_d1;
+wire evt_unlock   = unlock_rise && !duress_trig;
 
 // 语音调度逻辑 (单线串口防重入)
 always @(posedge clk_50M or negedge rst_sync_n) begin
@@ -248,8 +257,8 @@ always @(posedge clk_50M or negedge rst_sync_n) begin
             // Track 2: 开锁成功 ("门已开 / 欢迎使用")
             voice_play_en   <= 1'b1;
             voice_track_num <= 8'h02;
-        end else if (pwd_changed) begin
-            // Track 5: 密码修改/录入成功 ("修改成功")
+        end else if (pwd_changed || rec_ok) begin
+            // Track 5: 密码修改/录入/恢复成功 ("修改成功")
             voice_play_en   <= 1'b1;
             voice_track_num <= 8'h05;
         end else if (peep_rise) begin
@@ -264,7 +273,7 @@ always @(posedge clk_50M or negedge rst_sync_n) begin
             // Track 4: 系统严重锁定 ("系统已锁定")
             voice_play_en   <= 1'b1;
             voice_track_num <= 8'h04;
-        end else if (beep_err) begin
+        end else if (beep_err || rec_beep_err) begin
             // Track 3: 密码输入错误 ("密码错误")
             voice_play_en   <= 1'b1;
             voice_track_num <= 8'h03;
@@ -293,7 +302,8 @@ voice_player #(
 // --------------------------------------------------------------------------
 // 6. 无源蜂鸣器 PWM 驱动 (按键音、错误警告音、锁定严重警报、成功和弦，0 DSP)
 // --------------------------------------------------------------------------
-wire beep_err_comb = beep_err | door_alert_pulse; // 门磁超时报警同步发蜂鸣警报音
+wire beep_key_comb = beep_key | rec_beep_key;
+wire beep_err_comb = beep_err | door_alert_pulse | rec_beep_err | rec_err;
 
 buzzer_driver #(
     .CLK_FREQ(50_000_000)
@@ -301,8 +311,8 @@ buzzer_driver #(
     .clk       (clk_50M),
     .rst_n     (rst_sync_n),
     .tick_1k   (tick_1k),
-    .beep_key  (beep_key),
-    .beep_err  (beep_err_comb | rec_err),
+    .beep_key  (beep_key_comb),
+    .beep_err  (beep_err_comb),
     .beep_lock (beep_lock),
     .beep_succ (beep_succ | rec_ok),
     .buzzer_out(buzzer_out)
@@ -314,15 +324,19 @@ buzzer_driver #(
 // --------------------------------------------------------------------------
 wire [7:0] seg_out_raw;
 wire [3:0] seg_cs_raw;
+wire [3:0] seg_state_mux = rec_locked ? 4'd4 : (rec_active ? 4'd11 : state_code);
+wire [4:0] seg_len_mux   = rec_active ? {2'b00, rec_len} : pwd_len;
+wire [6:0] seg_cd_mux    = rec_locked ? rec_countdown[6:0] : lock_countdown;
 
 seg_display u_seg_display (
     .clk           (clk_50M),
     .rst_n         (rst_sync_n),
     .tick_1k       (tick_1k),
-    .state_code    (state_code),
-    .pwd_len       (pwd_len),
+    .state_code    (seg_state_mux),
+    .pwd_len       (seg_len_mux),
     .err_count     (err_count),
-    .lock_countdown(lock_countdown),
+    .lock_countdown(seg_cd_mux),
+    .door_alert    (door_alert),
     .seg_out       (seg_out_raw),
     .seg_cs        (seg_cs_raw)
 );
@@ -334,7 +348,7 @@ always @(posedge clk_50M or negedge rst_sync_n) begin
     if (!rst_sync_n) begin
         seg_out_r <= 8'h00;
         seg_cs_r  <= 4'hF;
-    end else if (peep_hang) begin
+    end else if (peep_hang && !door_alert) begin
         seg_out_r <= 8'h00;
         seg_cs_r  <= 4'hF;
     end else begin
@@ -359,6 +373,11 @@ oled_driver #(
     .err_count     (err_count),
     .lock_countdown(lock_countdown),
     .peep_hang     (peep_hang),
+    .rec_active    (rec_active),
+    .rec_len       (rec_len),
+    .rec_locked    (rec_locked),
+    .rec_countdown (rec_countdown[5:0]),
+    .door_alert    (door_alert),
     .oled_scl      (oled_scl),
     .oled_sda      (oled_sda)
 );
@@ -401,7 +420,7 @@ end
 assign led[0] = hb_led;
 assign led[1] = key_pressed;
 assign led[2] = unlock_all;
-assign led[3] = (state_code == 4'd4);
+assign led[3] = (state_code == 4'd4) | rec_locked;
 assign led[4] = (state_code == 4'd3);
 assign led[5] = door_open;
 assign led[6] = (err_count >= 2'd1);
@@ -409,22 +428,15 @@ assign led[7] = (err_count >= 2'd2) | door_alert;
 
 // --------------------------------------------------------------------------
 // 11. 邮差上岗
-//     事件的来源都抄现成的:
-//       开锁上升沿 已经有了(unlock_rise)
-//       锁定       safe_fsm 进 S_LOCKED 时自带一拍 beep_lock
-//       反挟持     duress_alarm 是粘滞的,得自己取个沿
-//       门没关     door_alert_pulse 已经有了
+//     事件的来源:
+//       开锁上报   evt_unlock (已过滤反挟持开锁，避免 'D' 与 'U' 混发)
+//       锁定上报   beep_lock ('L')
+//       锁定结束   lock_timeout_pulse ('T')
+//       重新闭锁   relock_pulse ('K')
+//       反挟持上报 duress_trig ('D', 每次触发均发单拍脉冲)
+//       门未关报警 door_alert_pulse ('A')
+//       单次输错   beep_err ('E')
 // --------------------------------------------------------------------------
-reg duress_alarm_d1;
-always @(posedge clk_50M or negedge rst_sync_n) begin
-    if (!rst_sync_n) begin
-        duress_alarm_d1 <= 1'b0;
-    end else begin
-        duress_alarm_d1 <= duress_alarm;
-    end
-end
-wire duress_rise = duress_alarm && !duress_alarm_d1;
-
 uart_mailman #(
     .CLK_FREQ(50_000_000),
     .BAUD(115_200),
@@ -435,10 +447,14 @@ uart_mailman #(
     .tick_1k      (tick_1k),
     .uart_rx      (uart_rx),
     .uart_tx      (uart_tx),
-    .evt_unlock   (unlock_rise),
+    .evt_unlock   (evt_unlock),
     .evt_lock     (beep_lock),
-    .evt_duress   (duress_rise),
+    .evt_duress   (duress_trig),
     .evt_door     (door_alert_pulse),
+    .evt_lock_end (lock_timeout_pulse),
+    .evt_relock   (relock_pulse),
+    .evt_pwd_err  (beep_err),
+    .is_locked    (state_code == 4'd4),
     .peep_hang    (peep_hang),
     .remote_unlock(remote_unlock),
     .cmd_safe     (cmd_safe),
@@ -469,6 +485,8 @@ recovery_mgr #(
     .reset_req    (reset_req),
     .rec_len      (rec_len),
     .rec_try      (rec_try),
+    .rec_beep_key (rec_beep_key),
+    .rec_beep_err (rec_beep_err),
     .rec_err      (rec_err),
     .rec_ok       (rec_ok),
     .rec_locked   (rec_locked),

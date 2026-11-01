@@ -33,10 +33,14 @@ module tb_uart_mailman;
     reg  uart_rx = 1'b1;
 
     // 事件输入
-    reg evt_unlock = 1'b0;
-    reg evt_lock   = 1'b0;
-    reg evt_duress = 1'b0;
-    reg evt_door   = 1'b0;
+    reg evt_unlock   = 1'b0;
+    reg evt_lock     = 1'b0;
+    reg evt_duress   = 1'b0;
+    reg evt_door     = 1'b0;
+    reg evt_lock_end = 1'b0;
+    reg evt_relock   = 1'b0;
+    reg evt_pwd_err  = 1'b0;
+    reg is_locked    = 1'b0;
 
     // 输出信号
     wire peep_hang;
@@ -59,6 +63,10 @@ module tb_uart_mailman;
         .evt_lock     (evt_lock),
         .evt_duress   (evt_duress),
         .evt_door     (evt_door),
+        .evt_lock_end (evt_lock_end),
+        .evt_relock   (evt_relock),
+        .evt_pwd_err  (evt_pwd_err),
+        .is_locked    (is_locked),
         .peep_hang    (peep_hang),
         .remote_unlock(remote_unlock),
         .cmd_safe     (cmd_safe),
@@ -154,19 +162,68 @@ module tb_uart_mailman;
             fail_count = fail_count + 1;
         end
 
-        // 3. 测试事件仲裁队列
-        $display("\n[Case 3] 测试并发事件仲裁队列 (同发 U/L/A/D)...");
-        evt_unlock <= 1'b1;
-        evt_lock   <= 1'b1;
-        evt_duress <= 1'b1;
-        evt_door   <= 1'b1;
-        @(posedge clk);
-        evt_unlock <= 1'b0;
-        evt_lock   <= 1'b0;
-        evt_duress <= 1'b0;
-        evt_door   <= 1'b0;
+        // 3. 测试远程开锁门控 (is_locked 与 peep_hang 下拒绝 'R')
+        $display("\n[Case 3] 测试 is_locked=1 与 peep_hang=1 时拒绝远程开锁 'R'...");
+        is_locked = 1'b1;
+        send_rx_byte(8'h52); // 'R'
+        repeat (10) @(posedge clk);
+        if (remote_unlock === 1'b0) begin
+            $display("  [PASS] is_locked=1 时成功拒绝 'R' 远程开锁");
+            pass_count = pass_count + 1;
+        end else begin
+            $display("  [FAIL] is_locked=1 时错误响应了 'R'");
+            fail_count = fail_count + 1;
+        end
+        is_locked = 1'b0;
 
-        repeat (20000) @(posedge clk);
+        send_rx_byte(8'h50); // 'P' 进入防窥
+        send_rx_byte(8'h52); // 'R'
+        repeat (10) @(posedge clk);
+        if (remote_unlock === 1'b0) begin
+            $display("  [PASS] peep_hang=1 时成功拒绝 'R' 远程开锁");
+            pass_count = pass_count + 1;
+        end else begin
+            $display("  [FAIL] peep_hang=1 时错误响应了 'R'");
+            fail_count = fail_count + 1;
+        end
+        send_rx_byte(8'h53); // 'S' 解除防窥
+
+        // 4. 测试事件仲裁队列与反挟持 'D' 吞并 'U'
+        $display("\n[Case 4] 测试并发事件仲裁队列 (同发 D/L/T/K/A/U/E，验证 D 吞并 U 且按优先级发送)...");
+        @(posedge clk);
+        evt_unlock   <= 1'b1;
+        evt_lock     <= 1'b1;
+        evt_duress   <= 1'b1;
+        evt_door     <= 1'b1;
+        evt_lock_end <= 1'b1;
+        evt_relock   <= 1'b1;
+        evt_pwd_err  <= 1'b1;
+        @(posedge clk);
+        evt_unlock   <= 1'b0;
+        evt_lock     <= 1'b0;
+        evt_duress   <= 1'b0;
+        evt_door     <= 1'b0;
+        evt_lock_end <= 1'b0;
+        evt_relock   <= 1'b0;
+        evt_pwd_err  <= 1'b0;
+
+        repeat (2) @(posedge clk);
+        if (the_letter === 8'h44) begin
+            $display("  [PASS] 最高优先级首字节为 'D' (0x44)");
+            pass_count = pass_count + 1;
+        end else begin
+            $display("  [FAIL] 首字节期望 'D' (0x44)，实际为 0x%02x", the_letter);
+            fail_count = fail_count + 1;
+        end
+
+        repeat (35000) @(posedge clk);
+        if (the_letter === 8'h45) begin
+            $display("  [PASS] 队列末字节为 'E' (0x45)，且 'U' 已被 'D' 互斥抑制");
+            pass_count = pass_count + 1;
+        end else begin
+            $display("  [FAIL] 队列末字节期望 'E' (0x45)，实际为 0x%02x", the_letter);
+            fail_count = fail_count + 1;
+        end
 
         $display("\n=================================================");
         $display("  测试结果汇总: PASS=%0d, FAIL=%0d", pass_count, fail_count);

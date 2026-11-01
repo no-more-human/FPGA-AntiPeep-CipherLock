@@ -123,7 +123,8 @@ class MonitorApp:
         tools = ttk.Frame(side)
         tools.pack(fill="x", pady=4)
         ttk.Button(tools, text="测试 P · 防窥", command=lambda: self.test_command("P")).pack(side="left", expand=True, fill="x", padx=(0, 4))
-        ttk.Button(tools, text="恢复自动判断", command=self.restore_vision).pack(side="left", expand=True, fill="x")
+        ttk.Button(tools, text="测试 S · 解挂", command=self.restore_vision).pack(side="left", expand=True, fill="x", padx=(0, 4))
+        ttk.Button(tools, text="测试 R · 开锁", command=lambda: self.test_command("R")).pack(side="left", expand=True, fill="x")
         ttk.Label(side, text="收到设备回报后更新锁体状态。",
                   foreground=MUTED, wraplength=350).pack(anchor="w", pady=5)
         ttk.Separator(side).pack(fill="x", pady=5)
@@ -207,18 +208,26 @@ class MonitorApp:
             messagebox.showinfo("开锁条件", str(error), parent=self.root)
 
     def test_command(self, command):
-        self.controller.peeping = True
+        if command == "P":
+            self.controller.peeping = True
+        elif command == "S":
+            self.controller.peeping = False
         if not self.controller.send(command):
             self.footer.set("未发送：请先连接串口")
 
     def restore_vision(self):
         v = self.controller.vision
         if not v or time.monotonic()-v["captured_at"] > 1:
-            self.footer.set("画面无效，无法确认环境安全")
+            self.controller.peeping = False
+            if not self.controller.send("S"):
+                self.footer.set("未发送：请先连接串口")
+            else:
+                self.footer.set("已发送 S 解挂指令（当前无实时视觉画面）")
             return
         active = v["decision"].peeping
         self.controller.peeping = active
-        self.controller.send("P" if active else "S")
+        if not self.controller.send("P" if active else "S"):
+            self.footer.set("未发送：请先连接串口")
 
     def change_password(self):
         try:

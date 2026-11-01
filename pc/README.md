@@ -26,12 +26,12 @@
 
 ## 2. 视觉功能
 
-- YOLOv8n 检测 ROI 内人体；Haar 独立检测真实人脸，LBPH 识别白名单。
-- 两人及以上持续 1.5 秒进入防窥风险；恢复零人/单人持续 2 秒解除。采用时间防抖，切换时发送 P 或 S。
-- 判定是“多人风险”，不能据此证明旁人正在偷窥；没有实现注视方向、遮挡恢复或动作意图识别。
+- YOLOv8n 检测 ROI 内人体（自动按 `min_person_height_ratio` 过滤远处小目标背景路人）；Haar 独立检测真实人脸，LBPH 识别白名单。
+- 两人及以上持续 0.8 秒进入防窥风险（触发 `'P'` 并自动抓拍留证）；恢复零人/单人持续 1.2 秒解除（触发 `'S'`）。采用时间防抖，切换时发送 P 或 S。
+- 主操作者人体以绿框 `User: Active` 标注，其余偷窥风险人体以红框 `Peeping Alert!` 标注。
 - 人脸稳定识别 2 秒后，允许点击核验开锁按钮发送 R；不会看到人脸就自动开门。第二个人体或人脸出现时立即撤销开锁资格。
-- 只有收到 U/D 才显示开锁确认。没有 K 闭锁回报时不会按 3 秒计时擅自显示已关门。
-- 摄像头/推理结果过期会关闭人脸开锁入口，并在已连接时发送 P；画面恢复后重新同步 S/P。
+- 收到 U/D 显示开锁确认，并在 3 秒后自动回弹更新为锁闭显示；收到 L 进入 60 秒锁定倒计时，到期自动解除锁定状态。
+- 摄像头未启用或推理结果过期时仅关闭人脸开锁入口，遵循故障安全降级（Fail-Safe）原则绝不锁死 FPGA 实体键盘；画面恢复后重新同步 S/P。
 - 摄像头、推理和录像分别运行；画面仅保留最新一帧，防止队列堆积。CPU 线程数默认 4，可在 config.json 调整。
 - LBPH 没有活体检测；阈值 65 是初始参数，需用未参与训练的真人样本调试，不能把训练照自测当成准确率。
 
@@ -75,7 +75,7 @@ continuous_recording 设 true 后开启持续分段录像，可作为滚动监�
 
 界面可分别修改 normal / duress，需输入当前常规密码，并二次确认新密码。密码固定六位，不能相同。只有匹配请求编号的成功回执才显示修改完成；超时/掉线显示“结果未知”，请用实体键盘核验。密码不会写入审计日志。
 
-真实模式默认禁用远程改密，因为已有单字节协议不能携带密码。队友完成扩展后，才将 extended_protocol 设 true。扩展设计见 ../docs/PC_FPGA_Protocol.md；当前 PC 的模拟通过不代表现有 RTL 已支持。
+真实模式默认禁用远程改密，因为已有单字节协议不能携带密码。队友完成扩展后，才将 extended_protocol 设 true。当前 PC 的模拟通过不代表现有 RTL 已支持。
 
 ## 5. 配置与数据
 
@@ -110,6 +110,6 @@ python -X utf8 -m unittest discover -s tests -v
 python -X utf8 tools/check_environment.py
 ~~~
 
-测试覆盖防窥防抖、人脸时效、串口分包、胁迫静默、锁定、改密确认与超时、真实 JPEG/AVI 读写、串口回环。实测与未验证项目见 ../docs/PC_Test_Report.md。
+测试覆盖防窥防抖、人脸时效、串口分包、胁迫静默与伴随 U 过滤、60s 锁定自动恢复、改密确认与超时、真实 JPEG/AVI 读写、串口回环。
 
 接口资料：[Ultralytics 预测接口](https://docs.ultralytics.com/modes/predict/)、[OpenCV LBPH](https://docs.opencv.org/4.x/df/d25/classcv_1_1face_1_1LBPHFaceRecognizer.html)、[PySerial](https://pyserial.readthedocs.io/en/latest/pyserial_api.html)。外部依赖与预训练权重遵循各自许可。

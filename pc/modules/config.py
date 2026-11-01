@@ -23,6 +23,10 @@ def load_config(path=None):
                 "record_max_gb", "record_retention_days"):
         if type(config[key]) not in (int, float) or not math.isfinite(config[key]) or config[key] <= 0:
             raise ValueError(f"{key} 必须为正数")
+    ratio = config.get("min_person_height_ratio", 0.25)
+    if type(ratio) not in (int, float) or not 0 <= ratio < 1:
+        raise ValueError("min_person_height_ratio 必须在 [0, 1) 内")
+    config["min_person_height_ratio"] = ratio
     if type(config["confidence"]) not in (int, float) or not 0 < config["confidence"] <= 1:
         raise ValueError("confidence 必须在 (0, 1] 内")
     roi = config["roi"]

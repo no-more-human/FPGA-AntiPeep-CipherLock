@@ -99,6 +99,14 @@ module tb_top;
         else
             $display("[FAIL] Expected seg_out=00, seg_cs=F on 'P', got %h %h", seg_out, seg_cs);
 
+        // 防窥挂起期间下发 'R' (0x52) 远程开锁，应当被拦截
+        uart_send_byte(8'h52);
+        #(CLK_PERIOD * 20);
+        if (led[2] == 1'b0)
+            $display("[PASS] Remote unlock 'R' blocked while peep_hang is active (led[2]=0).");
+        else
+            $display("[FAIL] Remote unlock 'R' should be blocked under peep_hang.");
+
         // 模拟 PC 下发 'S' (0x53) 安全恢复指令
         uart_send_byte(8'h53);
         #(CLK_PERIOD * 20);

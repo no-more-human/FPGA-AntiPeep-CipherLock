@@ -50,6 +50,11 @@ module tb_door_sensor;
         end
     end
 
+    integer pulse_cnt = 0;
+    always @(posedge clk) begin
+        if (alert_pulse) pulse_cnt = pulse_cnt + 1;
+    end
+
     initial begin
         $display("[INFO] Starting tb_door_sensor simulation...");
         rst_n       = 1'b0;
@@ -89,19 +94,20 @@ module tb_door_sensor;
         if (door_alert == 1'b0)
             $display("[PASS] No alert when door open without unlock.");
 
-        // 开锁并持续开门 -> 触发超时报警
-        $display("[TEST 3] Unlocking and waiting for timeout alert...");
+        // 开锁并持续开门 -> 触发超时报警与周期复响
+        $display("[TEST 3] Unlocking and waiting for timeout alert & periodic repeat pulse...");
+        pulse_cnt = 0;
         @(posedge clk);
         unlock_en = 1'b1;
         @(posedge clk);
         unlock_en = 1'b0;
 
-        // 等待 2 个秒边界 (约 2000 个 tick)
-        #(CLK_PERIOD * 25000);
-        if (door_alert == 1'b1)
-            $display("[PASS] Door alert successfully triggered after timeout! door_alert=1");
+        // 等待超过 3 个秒边界 (约 3500 个 tick)，验证超时后持续复响
+        #(CLK_PERIOD * 40000);
+        if (door_alert == 1'b1 && pulse_cnt >= 2)
+            $display("[PASS] Door alert triggered & periodically repeated! door_alert=1, pulse_cnt=%0d", pulse_cnt);
         else
-            $display("[FAIL] Door alert did not trigger. door_alert=%b, open_sec=%d", door_alert, open_sec_cnt);
+            $display("[FAIL] Door alert or repeat pulse abnormal. door_alert=%b, pulse_cnt=%0d, open_sec=%d", door_alert, pulse_cnt, open_sec_cnt);
 
         // 门关严 -> 立即消警
         $display("[TEST 4] Closing door & verifying immediate alert clear...");

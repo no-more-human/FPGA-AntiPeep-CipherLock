@@ -25,6 +25,7 @@ class Controller:
         self.alarms = deque()
         self.pending = {}
         self.last_remote = -100.0
+        self.last_duress_at = -100.0
         self.error = ""
         self.last_status = ""
         if demo:
@@ -72,8 +73,11 @@ class Controller:
     def update_vision(self, result):
         self.vision = result
         if result is None:
-            if not self.vision_paused and self.connected:
-                self.send("P")
+            if not self.vision_paused:
+                if self.peeping and self.connected:
+                    # Fail-safe fallback: release hardware keypad if camera drops while peeping.
+                    self.peeping = False
+                    self.send("S")
             self.vision_paused = True
         else:
             if self.vision_paused or self.needs_sync:
@@ -134,6 +138,7 @@ class Controller:
             for event in self.sim.tick():
                 self.emit(event)
         now = time.monotonic()
+        self.state.tick(now)
         for request_id, request in list(self.pending.items()):
             if now-request["at"] >= 5:
                 self.pending.pop(request_id)
@@ -156,7 +161,7 @@ class Controller:
                 else:
                     v = self.vision
                     fresh = v and time.monotonic()-v["captured_at"] < 1
-                    self.send("P" if not fresh or v["decision"].peeping else "S")
+                    self.send("P" if (fresh and v["decision"].peeping) else "S")
                     self.needs_sync = True
         elif kind in ("link_error", "vision_error", "evidence_error"):
             detail = msg.get("detail") or "视觉暂不可用"
@@ -171,13 +176,21 @@ class Controller:
                 self.audit.add("EVIDENCE_ERROR", detail, sensitive=True)
         elif kind == "peep":
             self.peeping = bool(msg["active"])
-            self.log("PEEP" if self.peeping else "SAFE",
-                     "检测到多人，请注意遮挡密码" if self.peeping else "视野恢复，防窥告警解除")
+            event_id = self.log("PEEP" if self.peeping else "SAFE",
+                                "检测到多人，请注意遮挡密码" if self.peeping else "视野恢复，防窥告警解除")
+            if self.peeping:
+                self.recorder.trigger(event_id, "P")
             self.send("P" if self.peeping else "S")
         elif kind == "event" and msg.get("code") in EVENTS:
             code = msg["code"]
+            now = time.monotonic()
+            if code == "U" and now - self.last_duress_at < 0.5:
+                # Ignore companion 'U' sent by FPGA right after 'D' during duress unlock.
+                return
+            if code == "D":
+                self.last_duress_at = now
             self.device_seen = True
-            self.state.apply(code)
+            self.state.apply(code, now)
             sensitive = code in ("D", "C")
             event_id = self.log(code, EVENTS[code], sensitive=sensitive)
             if code == "D" and self.config["alarm_display"] == "silent":

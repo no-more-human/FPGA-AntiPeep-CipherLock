@@ -82,14 +82,37 @@ class VisionEngine:
             raise ValueError("ROI 在当前画面内为空")
         results = self.model.predict(crop, classes=[0], conf=self.config["confidence"],
                                      imgsz=self.config["image_size"], verbose=False)
-        people_count = len(results[0].boxes)
+        crop_h = max(y2 - y1, 1)
+        min_ratio = self.config.get("min_person_height_ratio", 0.25)
+        raw_boxes = results[0].boxes.xyxy.cpu().numpy()
+        confs = results[0].boxes.conf.cpu().numpy() if results[0].boxes is not None else []
+        valid_persons = []
+        far_persons = []
+        for box, conf in zip(raw_boxes, confs):
+            a, b, c, d = [int(v) for v in box]
+            if (d - b) / crop_h >= min_ratio:
+                valid_persons.append((a, b, c, d, float(conf)))
+            else:
+                far_persons.append((a, b, c, d, float(conf)))
+        # Sort valid persons by bounding box area descending: largest is primary operator.
+        valid_persons.sort(key=lambda item: (item[2] - item[0]) * (item[3] - item[1]), reverse=True)
+        people_count = len(valid_persons)
         # Recognition always uses the original image, before any detection annotation.
         faces = self.face_auth.analyze_faces(crop)
         decision = self.policy.update(start, people_count, faces)
         annotated = frame.copy()
-        for box in results[0].boxes.xyxy.cpu().numpy():
-            a, b, c, d = [int(v) for v in box]
-            cv2.rectangle(annotated, (a+x1, b+y1), (c+x1, d+y1), (220, 160, 70), 2)
+        for a, b, c, d, _ in far_persons:
+            cv2.rectangle(annotated, (a+x1, b+y1), (c+x1, d+y1), (130, 130, 130), 1)
+        for idx, (a, b, c, d, conf) in enumerate(valid_persons):
+            if idx == 0:
+                color = (80, 210, 100)
+                tag = "User: Active"
+            else:
+                color = (60, 70, 245)
+                tag = f"Peeping Alert! {conf*100:.0f}%"
+            cv2.rectangle(annotated, (a+x1, b+y1), (c+x1, d+y1), color, 2)
+            cv2.putText(annotated, tag, (a+x1, max(24, b+y1-8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, .55, color, 2)
         for face in faces:
             x, y, w, h = face["bbox"]
             color = (80, 210, 100) if face["authorized"] else (80, 90, 240)

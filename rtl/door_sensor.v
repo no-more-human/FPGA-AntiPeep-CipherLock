@@ -157,6 +157,10 @@ always @(posedge clk or negedge rst_n) begin
                                 door_alert  <= 1'b1;
                                 alert_pulse <= 1'b1;
                             end
+                        end else begin
+                            // 门未关超时期间 (door_alert == 1): 每 1 秒持续产生一拍周期性告警脉冲
+                            door_alert  <= 1'b1;
+                            alert_pulse <= 1'b1;
                         end
                     end else begin
                         ms_cnt <= ms_cnt + 10'd1;

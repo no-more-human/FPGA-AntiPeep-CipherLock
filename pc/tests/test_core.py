@@ -92,22 +92,22 @@ class SimulatorTests(unittest.TestCase):
 
     def test_virtual_digits_and_duress_priority(self):
         self.assertEqual(self.codes(self.sim.submit("88912345666")), ["U"])
-        self.assertEqual(self.codes(self.sim.submit("123456654321")), ["D"])
+        self.assertEqual(self.codes(self.sim.submit("123456654321")), ["D", "U"])
 
-    def test_lockout_expires_and_duress_stays_available(self):
+    def test_lockout_expires_and_blocks_all_keypad_input(self):
         for _ in range(2):
-            self.assertEqual(self.codes(self.sim.submit("000000")), ["E"])
-        self.assertEqual(self.codes(self.sim.submit("000000")), ["E", "L"])
+            self.assertEqual(self.codes(self.sim.submit("000000")), [])
+        self.assertEqual(self.codes(self.sim.submit("000000")), ["L"])
         self.assertEqual(self.sim.submit("123456"), [])
-        self.assertEqual(self.codes(self.sim.submit("654321")), ["D"])
+        self.assertEqual(self.sim.submit("654321"), [])
         self.clock.now += 60
         self.assertIn("T", self.codes(self.sim.tick()))
         self.assertEqual(self.codes(self.sim.submit("123456")), ["U"])
 
-    def test_peep_suspends_normal_input_without_blocking_duress(self):
+    def test_peep_suspends_all_keypad_input_matching_rtl(self):
         self.sim.command("P")
         self.assertEqual(self.sim.submit("123456"), [])
-        self.assertEqual(self.codes(self.sim.submit("99654321")), ["D"])
+        self.assertEqual(self.sim.submit("99654321"), [])
 
     def test_change_rejects_wrong_old_duplicate_and_bad_length(self):
         base = {"id": "1", "op": "password_change", "kind": "normal", "old": "000000", "new": "112233"}
@@ -120,7 +120,7 @@ class SimulatorTests(unittest.TestCase):
         answer = self.sim.request({"id": "1", "op": "password_change", "kind": "normal",
                                    "old": "123456", "new": "112233"})
         self.assertTrue(answer[0]["ok"])
-        self.assertEqual(self.codes(self.sim.submit("123456")), ["E"])
+        self.assertEqual(self.codes(self.sim.submit("123456")), [])
         self.assertEqual(self.codes(self.sim.submit("8811223399")), ["U"])
 
     def test_input_overflow_rejects_whole_attempt(self):
@@ -144,13 +144,45 @@ class ControllerTests(unittest.TestCase):
         self.audit.close()
         self.temp.cleanup()
 
-    def test_duress_is_visible_as_normal_on_site_and_retained_for_security(self):
+    def test_duress_is_visible_as_normal_on_site_and_filters_companion_u(self):
         self.controller.handle({"type": "event", "code": "D"})
+        self.controller.handle({"type": "event", "code": "U"})
+        u_logs = [line for line in self.controller.lines if line[1] == "U"]
+        self.assertEqual(len(u_logs), 1)
         self.assertEqual(self.controller.lines[-1][1:], ("U", "正常开锁"))
         self.assertFalse(self.controller.alarms)
         self.assertNotIn("D", [row[2] for row in self.audit.recent()])
+        self.assertNotIn("U", [row[2] for row in self.audit.recent(include_sensitive=True)])
         self.assertIn("D", [row[2] for row in self.audit.recent(include_sensitive=True)])
+        self.assertEqual(len(self.recorder.jobs), 1)
         self.assertEqual(self.recorder.jobs[-1][1], "D")
+
+    def test_peep_triggers_evidence_snapshot(self):
+        self.controller.handle({"type": "peep", "active": True})
+        self.assertEqual(self.recorder.jobs[-1][1], "P")
+
+    def test_lockout_and_unlock_auto_expire_without_hardware_t_or_k(self):
+        self.controller.state.apply("U", now=10.0)
+        self.assertIn("已开锁", self.controller.state.lock)
+        self.controller.state.tick(now=13.1)
+        self.assertIn("已锁闭", self.controller.state.lock)
+
+        self.controller.state.apply("L", now=20.0)
+        self.assertTrue(self.controller.state.lockout)
+        self.controller.state.tick(now=80.1)
+        self.assertFalse(self.controller.state.lockout)
+        self.assertIn("已锁闭", self.controller.state.lock)
+
+    def test_camera_loss_fails_safe_without_locking_hardware_keypad(self):
+        now = time.monotonic()
+        self.controller.update_vision({"captured_at": now, "decision": Decision(False, False, False, None)})
+        self.assertFalse(self.controller.sim.peeping)
+        self.controller.update_vision(None)
+        self.assertFalse(self.controller.sim.peeping)
+        self.controller.update_vision({"captured_at": now, "decision": Decision(True, True, False, None)})
+        self.assertTrue(self.controller.sim.peeping)
+        self.controller.update_vision(None)
+        self.assertFalse(self.controller.sim.peeping)
 
     def test_security_endpoint_gets_alarm(self):
         self.cfg["alarm_display"] = "security"
@@ -209,15 +241,6 @@ class ControllerTests(unittest.TestCase):
         self.controller.demo = False
         with self.assertRaises(ValueError):
             self.controller.change_password("normal", "123456", "112233", "112233", lambda *a: None)
-
-    def test_camera_loss_and_recovery_resynchronize_protection(self):
-        now = time.monotonic()
-        self.controller.update_vision({"captured_at": now, "decision": Decision(False, False, False, None)})
-        self.assertFalse(self.controller.sim.peeping)
-        self.controller.update_vision(None)
-        self.assertTrue(self.controller.sim.peeping)
-        self.controller.update_vision({"captured_at": now, "decision": Decision(False, False, False, None)})
-        self.assertFalse(self.controller.sim.peeping)
 
 
 if __name__ == "__main__":

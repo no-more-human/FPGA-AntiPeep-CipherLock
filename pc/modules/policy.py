@@ -46,24 +46,51 @@ class VisionPolicy:
 
 
 class SafeState:
-    def __init__(self):
+    def __init__(self, lock_hold_sec=3.0, lockout_sec=60.0):
+        self.lock_hold_sec = lock_hold_sec
+        self.lockout_sec = lockout_sec
         self.lock = "未知（等待下位机状态）"
         self.lockout = False
+        self.unlock_until = 0.0
+        self.lockout_until = 0.0
 
-    def apply(self, code):
+    def apply(self, code, now=None):
+        import time
+        now = time.monotonic() if now is None else now
         if code in ("U", "D"):
+            self.lockout = False
+            self.lockout_until = 0.0
+            self.unlock_until = now + self.lock_hold_sec
             self.lock = "已开锁（下位机回报）"
         elif code == "L":
             self.lockout = True
-            self.lock = "试错锁定（等待解除回报）"
+            self.unlock_until = 0.0
+            self.lockout_until = now + self.lockout_sec
+            self.lock = "试错锁定（60s 倒计时中）"
         elif code == "K":
+            self.unlock_until = 0.0
             self.lock = "已锁闭（下位机回报）"
         elif code == "T":
             self.lockout = False
+            self.lockout_until = 0.0
             self.lock = "已锁闭（试错锁定解除）"
         elif code == "A":
+            self.unlock_until = 0.0
             self.lock = "门未关严（下位机回报）"
+
+    def tick(self, now=None):
+        import time
+        now = time.monotonic() if now is None else now
+        if self.lockout and self.lockout_until and now >= self.lockout_until:
+            self.lockout = False
+            self.lockout_until = 0.0
+            self.lock = "已锁闭（60s 试错锁定自动解除）"
+        if self.unlock_until and now >= self.unlock_until:
+            self.unlock_until = 0.0
+            self.lock = "已锁闭（3秒自动回弹）"
 
     def disconnected(self):
         self.lock = "未知（通信中断）"
         self.lockout = False
+        self.unlock_until = 0.0
+        self.lockout_until = 0.0
