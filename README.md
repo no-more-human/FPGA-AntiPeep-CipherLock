@@ -1,6 +1,6 @@
 # 《基于 Edge AI 视觉防窥与 FPGA 硬件安全的异构智能保险箱》
 
-> **PC 视觉与上位机入口**：新增 [pc/README.md](pc/README.md)，可运行人脸识别、YOLO 多人风险检测、串口联动、日志和取证。双击 pc/run_demo.bat 即可体验无硬件纯软件演示。FPGA 对接接口见 [docs/PC_FPGA_Protocol.md](docs/PC_FPGA_Protocol.md)，验证报告见 [docs/PC_Test_Report.md](docs/PC_Test_Report.md)。
+> **PC 视觉与上位机入口**：详见 [pc/README.md](pc/README.md)，可运行人脸识别、YOLO 多人风险检测、串口联动、日志和取证。双击 `pc/run_demo.bat` 即可体验无硬件纯软件演示。通信协议标准见 [串口通信协议标准](#-串口通信协议标准-uart-protocol)，硬件引脚手册见 [docs/EG4S20_Pinout.md](docs/EG4S20_Pinout.md)，开发规划详见 [plan.md](plan.md)。
 > **Heterogeneous Smart Safe with Edge AI Visual Anti-Peeping and FPGA Hardware Security**
 
 <div align="center">
@@ -159,6 +159,31 @@ sequenceDiagram
 | **门磁 / 拨码** | `door_gpio`<br>`sw_recovery` | **A10**<br>**A14** | 板载拨码 `SW1`<br>板载拨码 `SW7` | LVCMOS33 (PULLUP)<br>LVCMOS33 (PULLDOWN)| `SW1`: 门磁开闭检测 (`0`闭合/`1`打开)<br>`SW7`: 应急恢复码硬允许开关 |
 | **板载声光外设** | `buzzer_out`<br>`led[7:0]`<br>`seg_out` / `seg_cs` | **H11**<br>**B14~F16**<br>**A4~C8 / C9~A3** | 板载蜂鸣器 `LS1`<br>板载 `LED0~LED7`<br>板载 4 位数码管 | LVCMOS33 | 内部已硬连线，无需外部插线 |
 
+#### 板载 8 位 LED 状态指示分配（对齐 `rtl/top.v`）
+
+| LED 编号 | 物理管脚 | 驱动信号 (`top.v`) | 默认状态 | 触发点亮条件与功能指示 |
+| :---: | :---: | :--- | :---: | :--- |
+| **LED0** | **B14** | `heartbeat` | 1Hz 闪烁 | 系统运行心跳（0.5s 亮 / 0.5s 灭） |
+| **LED1** | **A15** | `key_pressed` | 灭 | 矩阵键盘按键按下指示（任意键按下即亮） |
+| **LED2** | **B15** | `unlock_en` | 灭 | 开锁驱动有效指示（开锁 3 秒保持点亮） |
+| **LED3** | **B16** | `fsm_locked` | 灭 | 输错锁定指示（连续输错 3 次锁定 60 秒常亮） |
+| **LED4** | **C15** | `error_flag` | 灭 | 密码比对错误瞬时脉冲指示 |
+| **LED5** | **C16** | `door_open` | 随门磁变化 | 门磁开闭实时指示（门开点亮，门闭熄灭） |
+| **LED6** | **E16** | `err_cnt >= 1` | 灭 | 错误历史指示 1（累计输错 $\ge 1$ 次常亮） |
+| **LED7** | **F16** | `err_cnt >= 2 \|\| door_alarm` | 灭 | 错误历史指示 2（输错 $\ge 2$ 次或门超时未关报警点亮） |
+
+#### JQ8900-16P 真人语音曲目表（标准普通话）
+
+| 曲目编号 | 触发场景 | 语音播报内容 (普通话) | 触发源 |
+| :---: | :---: | :--- | :--- |
+| **01 (00001)** | 按键输入 / 开机就绪 | “嘀”（按键提示音）/ 欢迎使用 | 矩阵键盘按键 / POR 复位 |
+| **02 (00002)** | 密码验证通过 / 远程开锁 | “密码正确，门已开启” | `safe_fsm` 验证成功 / 上位机 `'R'` |
+| **03 (00003)** | 密码比对错误 / 改密不一致 | “密码错误，请重新输入” | `safe_fsm` 比对失败 |
+| **04 (00004)** | 连续输错 3 次锁定 | “系统已锁定，请稍后再试” | `safe_fsm` 进入 60 秒锁定 |
+| **05 (00005)** | 收到 PC 'P' 防窥挂起 | “警告，注意防窥防盗” | 上位机检测偷窥注入 `'P'` |
+| **06 (00006)** | 开门超过 15 秒未关 | “箱门超时未关，请及时关门” | `door_sensor` 超时报警脉冲 |
+| **07 (00007)** | A/B 键密码修改/录入成功 | “密码修改成功” | `safe_fsm` 录入/改密两阶段完成 |
+
 > 完整的硬木课堂大拇指开发板（DMZ-EG4S20）官方全引脚映射表与外接联排接线手册详见 [`docs/EG4S20_Pinout.md`](./docs/EG4S20_Pinout.md) 及 [`docs/EG4S20_Pinout.xlsx`](./docs/EG4S20_Pinout.xlsx)。
 
 ---
@@ -267,27 +292,69 @@ FPGA/
 ├── .gitignore             # 忽略安路 TD 编译产物 (*_Runs/) 与 Python 临时缓存
 ├── LICENSE                # MIT 开源授权协议
 ├── README.md              # 项目主文档与快速使用指南
-├── plan.md                # 20 天冲刺开发全景规划书
+├── plan.md                # 20 天冲刺开发全景规划书 (基线与执行手册)
+├── revision.md            # 全系统问题诊断与深度修改建议报告
 ├── requirements.txt       # 上位机 Python 依赖环境清单
 ├── lock.al                # 安路 Tang Dynasty (TD) 主工程文件
 ├── lock.adc               # 物理引脚分配与 IO 属性约束文件
 │
+├── constraints/           # 【时序约束】
+│   └── lock.sdc           # 50MHz 系统时钟约束文件
+│
 ├── rtl/                   # 【FPGA 硬件源码】可综合 Verilog RTL
-│   ├── top.v              # 系统顶层模块
-│   └── clk_tick.v         # 多速率节拍使能发生器 (1kHz / 100Hz 同步脉冲)
+│   ├── top.v              # 系统顶层模块 (外设互联/按键仲裁/声光联动)
+│   ├── clk_tick.v         # 多速率节拍使能发生器 (1kHz / 100Hz 同步脉冲)
+│   ├── keypad_scan.v      # 4×4 矩阵键盘扫描与 20ms 硬件消抖
+│   ├── safe_fsm.v         # 密码状态机与 16 位自适应虚位密码滑窗提取比对
+│   ├── recovery_mgr.v     # 应急恢复码独立硬件管理通道 (SW7 拨码使能)
+│   ├── oled_driver.v      # SSD1306 0.96 寸 OLED I2C 纯硬件驱动
+│   ├── oled_font.v        # 中文字模点阵库与四行多页面动态映射
+│   ├── seg_display.v      # 板载 4 位共阴极数码管 1kHz 动态扫描显示
+│   ├── buzzer_driver.v    # 无源蜂鸣器多音阶与报警音频发生器
+│   ├── voice_player.v     # JQ8900-16P 单线串口真人语音驱动
+│   ├── servo_driver.v     # SG90 舵机 50Hz PWM 控制器 (0°/90°/3秒回弹)
+│   ├── door_sensor.v      # 门磁检测与 15 秒超时未关防盗报警
+│   ├── uart_rx.v          # UART 接收模块 (115200 8-N-1)
+│   ├── uart_tx.v          # UART 发送模块 (115200 8-N-1)
+│   └── uart_mailman.v     # 串口事件邮差 (4 字节 FIFO 异步指令暂存与发送)
 │
 ├── sim/                   # 【仿真与验证】Testbench 激励与波形文件
-│   ├── tb_top.v           # 顶层模块行为仿真激励
-│   └── tb_clk_tick.v      # 节拍分频逻辑 Testbench
+│   ├── tb_top.v           # 顶层系统行为联调仿真
+│   ├── tb_clk_tick.v      # 节拍使能分频仿真
+│   ├── tb_keypad_scan.v   # 键盘消抖与键值译码仿真
+│   ├── tb_safe_fsm.v      # 密码核验与虚位滑窗提取仿真
+│   ├── tb_servo_driver.v  # 舵机 PWM 控制器脉宽仿真
+│   ├── tb_door_sensor.v   # 门磁消抖与超时警报仿真
+│   ├── tb_voice_player.v  # 语音单线串口时序仿真
+│   ├── tb_uart.v          # UART 串口收发仿真
+│   └── tb_uart_mailman.v  # 邮件事件打包与防丢测试
 │
-├── constraints/           # 【引脚约束备份】
-│   └── lock.adc           # 管脚物理位置、IO 电平与上拉设定
+├── pc/                    # 【PC 上位机 Edge AI 视觉与综合控制台】
+│   ├── main.py            # 上位机可视化主控台 (PyQt6)
+│   ├── security_monitor.py# 独立视觉安防监控守护进程
+│   ├── config.json        # 上位机与防窥视觉策略配置
+│   ├── yolov8n.pt         # YOLOv8n 轻量化视觉检测模型权重
+│   ├── README.md          # 上位机架构与使用说明
+│   ├── requirements.txt   # PC 端独享依赖项
+│   ├── run_demo.bat       # 纯软件模拟演示一键运行脚本
+│   ├── run_camera_demo.bat# 摄像头防窥联动一键运行脚本
+│   ├── modules/           # 上位机核心模块 (视觉/人脸/策略/串口/证据库等)
+│   ├── tools/             # 录入/环境自检工具 (enroll_face, check_env 等)
+│   └── tests/             # 单元与集成测试 (test_core, test_io)
 │
-├── tools/                 # 【联调治具与上位机工具】
-│   └── serial_monitor.py  # 工业级双向串口监控与协议调试治具 (支持 --mock 模式)
+├── tools/                 # 【自动化脚本与联调治具】
+│   ├── serial_monitor.py  # 串口调试与协议交互治具 (--mock 模式支持)
+│   ├── gui_monitor.py     # 轻量级 GUI 串口监控工具
+│   ├── build.bat / .tcl   # TD 自动编译与比特流生成脚本
+│   ├── download.bat / .tcl# TD 比特流自动烧录脚本
+│   ├── generate_pinout_xlsx.py # 引脚表 Excel 生成器
+│   └── generate_wiring_diagram.py # 硬件接线示意图生成器
 │
-└── docs/                  # 【设计文档与资料库】
-    └── EG4S20_Pinout.xlsx # EG4S20 核心管脚速查与硬件引脚映射表
+└── docs/                  # 【硬件手册与设计资料库】
+    ├── EG4S20_Pinout.md   # 板载引脚与 P4 联排插针完全映射指南
+    ├── EG4S20_Pinout.xlsx # Excel 版引脚定义与信号速查表
+    ├── DMZ_EG4S20_Official_Pinout.png # 官方核心板引脚原理图
+    └── Hardware_Wiring_Guide.png      # P4 联排外接模块接线实物示意图
 ```
 
 ---
@@ -358,9 +425,24 @@ python tools/serial_monitor.py --mock
   - [x] **SG90 舵机 50Hz PWM 控制器**：50Hz 基准周期（20ms）、0.5ms（0° 闭锁）~ 1.5ms（90° 开锁）、3 秒自动回弹与 C 键手动提前闭锁（`rtl/servo_driver.v`）
   - [x] **A 键新用户录入与 B 键验旧改密闭环**：动态密码寄存器存储（默认 123456）、A 键双重录入确认防输错、B 键验旧改新权限闭环（输错旧密码扣罚错误次数）、15 秒无操作硬件看门狗超时强制放弃保护（`rtl/safe_fsm.v`）
   - [x] **0.96 寸 OLED 多页面交互与字模扩充**：增补 17 个 16×16 汉字字模（新、旧、改、设、置等）、四行多页面动态排版（`rtl/oled_font.v`, `rtl/oled_driver.v`）
-  - [x] **底层隐患治理与顶层声光联动**：修复开门超时检测时序隐患（`rtl/door_sensor.v`）、`state_code` 升级为 4 位宽、数码管显示适配（`rtl/seg_display.v`）、舵机 PWM 信号引脚固化至 `F14`（`lock.adc`）
+  - [x] **底层隐患治理与顶层声光联动**：修复开门超时检测时序隐患（`rtl/door_sensor.v`）、`state_code` 升级为 4 位宽、数码管显示适配（`rtl/seg_display.v`）、舵机 PWM 信号引脚固化至 `M11`（`lock.adc`，接 P4-6 排针）
   - [x] **全流程 TD 编译收敛**：LUT 占用 12.05% (2362/19600)、REG 占用 2.59% (508/19600)、**DSP 0**、建立时间余量 Setup Slack = **+1.800ns** ($F_{max} = 54.95\,\text{MHz}$)，生成全新比特流 `lock.bit`
-- [ ] **Day 7~10: 【Milestone 2】软硬异构通信闭环与三大创新点落地 (UART 115200 / YOLOv8 防窥 / 虚位提取 / 反挟持)**
+- [x] **Day 7: UART 115200 异步串口全双工收发与事件邮差队列** (已交付)
+  - [x] 板载 CH340 虚拟串口全双工通信（`uart_tx.v`, `uart_rx.v`，16 倍波特率过采样，消除时钟抖动）
+  - [x] 4 字节环形 FIFO 事件邮差（`uart_mailman.v`），实现脉冲锁存与异步防掉包
+- [x] **Day 8: PC 端 Edge AI 视觉防窥引擎与数字孪生控制台** (已交付)
+  - [x] 基于 YOLOv8n 的高帧率人脸/人体检测与三层时间-空间滞后滤波模型（`pc/modules/vision.py`, `pc/modules/policy.py`）
+  - [x] PyQt6 工业级安防监控仪表盘、事件黑匣子审计与多场景自动抓拍取证库（`pc/modules/ui.py`, `pc/modules/evidence.py`）
+- [x] **Day 9: 16 位物理虚位密码硬件提取引擎与双轨反挟持静默报警** (已交付)
+  - [x] 16 位滑窗模式匹配，纳秒级提取有效 6 位核心密码（`safe_fsm.v`）
+  - [x] 双轨反挟持静默报警机制（开锁麻痹歹徒 + 底层注入 'D' 连拍留证，`top.v`）
+  - [x] 全工程综合布线通过：LUT 4019 (20.51%)、REG 754 (3.85%)、DSP 0、Setup Slack = +2.621ns ($F_{max} \approx 57.54\,\text{MHz}$)
+- [ ] **Day 10: 【Milestone 2 贯通联调】软硬件跨模块协同与全系统问题诊断** (进行中 / In Progress)
+  - [x] 全系统软硬件交互全链路排查，输出深度诊断与修改建议报告 [`revision.md`](./revision.md)
+  - [ ] 修复反挟持双发/二次漏发、防窥挂起阻断反挟持、PC 锁定状态单向卡死等交互缺陷
+- [ ] **Day 11~14: 硬件级应急恢复管理通道 (SW7 + D键) 与声光体验极致打磨**
+  - [ ] `recovery_mgr.v` 声光反馈打通（数码管/OLED 倒计时与按键音）
+  - [ ] 门未关持续蜂鸣提醒与日常改密防呆加固
 - [ ] **Day 15~20: 【Milestone 3】实物封装总装、极限压测与答辩交付**
 
 ---

@@ -1,0 +1,124 @@
+# ==============================================================================
+# Antigravity & AI Context Ignore
+# Project: FPGA Smart Safe & Edge-AI (Anlogic EG4S20 + PC YOLOv8)
+# Purpose: Exclude build artifacts, large binaries, datasets, and cache
+#          to save context tokens, avoid hallucinations, and optimize speed.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. FPGA EDA Tool Artifacts (Anlogic Tang Dynasty / TD)
+#    These are large binary databases, bitstreams, and compile logs.
+# ------------------------------------------------------------------------------
+lock_Runs/
+*_Runs/
+*Runs/
+runs/
+gate/
+sim_netlist/
+al_ip/
+.recovery/
+
+# Bitstreams and binary programming files (Not readable by LLM)
+*.bit
+*.prg
+*.svf
+*.bin
+
+# Tang Dynasty internal databases & netlists
+*.db
+*.hdb
+*.rdb
+*.adb
+*.gate.v
+*.gate.sdf
+*.v_snr
+
+# EDA generated reports & logs (Bloats LLM context)
+*.log
+td_*.log
+debug.log
+*.area
+*.timing
+*.pin
+*.place
+*.route
+*.snr
+*.rpt
+*.summary
+*.tsm
+
+# ------------------------------------------------------------------------------
+# 2. Heavy Machine Learning Weights & Pre-trained Models
+#    LLMs cannot process raw binary model tensors or gigantic XML cascades directly.
+# ------------------------------------------------------------------------------
+*.pt
+*.pth
+*.onnx
+*.tflite
+*.engine
+*.weights
+pc/yolov8n.pt
+pc/models/haarcascade_frontalface_default.xml
+
+# ------------------------------------------------------------------------------
+# 3. Privacy, Biometrics & Dataset Files
+#    User face photos, captured security evidence images, and test recordings.
+# ------------------------------------------------------------------------------
+pc/known_faces/*
+!pc/known_faces/README.txt
+pc/data/
+pc/.test-tmp/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
+# ------------------------------------------------------------------------------
+# 4. Binary Media & Office Documents
+#    Docs images and Excel files. (Note: Use docs/EG4S20_Pinout.md for pin info!)
+# ------------------------------------------------------------------------------
+docs/*.png
+docs/*.jpg
+docs/*.jpeg
+docs/*.xlsx
+docs/*.pdf
+
+# ------------------------------------------------------------------------------
+# 5. Simulation Output Waves & Traces
+#    Dumps can reach hundreds of megabytes during RTL simulation.
+# ------------------------------------------------------------------------------
+*.vcd
+*.fsdb
+*.wlf
+transcript
+vsim.wlf
+work/
+
+# ------------------------------------------------------------------------------
+# 6. Python Cache & Virtual Environments
+# ------------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# ------------------------------------------------------------------------------
+# 7. Version Control & System Metadata
+# ------------------------------------------------------------------------------
+.git/
+.svn/
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/*.log
+pc/config.local.json
