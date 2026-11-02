@@ -20,14 +20,20 @@ MUTED = "#a2b5c7"
 GREEN = "#58d6aa"
 AMBER = "#ffcf76"
 
+OLED_BG = "#05080c"
+OLED_YELLOW = "#ffdf6b"
+OLED_CYAN = "#00e5ff"
+OLED_RED = "#ff5b6e"
+OLED_BORDER = "#2c4156"
+
 
 class MonitorApp:
     def __init__(self, config, demo=False, no_camera=False):
         self.config, self.demo = config, demo
         self.root = tk.Tk()
         self.root.title("智能保险箱 · 视觉与联动监控" + ("【模拟演示】" if demo else ""))
-        self.root.geometry("1180x880")
-        self.root.minsize(1100, 850)
+        self.root.geometry("1180x920")
+        self.root.minsize(1100, 880)
         self.root.configure(bg=BG)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.closed = False
@@ -38,6 +44,7 @@ class MonitorApp:
         self.worker = None
         self.last_log = None
         self.last_vision_at = -1
+        self.last_oled_sig = None
         self.photo = None
         self._build()
         if not no_camera:
@@ -108,31 +115,50 @@ class MonitorApp:
 
         side = ttk.Frame(body, padding=12)
         side.grid(row=0, column=1, sticky="nsew")
+
+        # 0.96" OLED 数字孪生终端组件 (SSD1306 128x64 双色荧光屏比例还原)
+        oled_hdr = ttk.Frame(side)
+        oled_hdr.pack(fill="x")
+        ttk.Label(oled_hdr, text='0.96" OLED 数字孪生终端',
+                  font=("Microsoft YaHei UI", 11, "bold")).pack(side="left")
+        ttk.Label(oled_hdr, text="SSD1306 · 128×64", foreground=MUTED,
+                  font=("Consolas", 9)).pack(side="right")
+
+        self.oled_canvas = tk.Canvas(
+            side, background=OLED_BG, highlightthickness=2,
+            highlightbackground=OLED_BORDER, width=320, height=136
+        )
+        self.oled_canvas.pack(fill="x", pady=(6, 8))
+        self.oled_canvas.bind("<Configure>", lambda _e: self._render_oled(force=True))
+        self._render_oled(force=True)
+
+        ttk.Separator(side).pack(fill="x", pady=(2, 6))
+
         ttk.Label(side, text="锁体与环境", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w")
         self.lock_status = tk.StringVar(value=self.controller.state.lock)
-        ttk.Label(side, textvariable=self.lock_status, font=("Microsoft YaHei UI", 15, "bold"),
-                  wraplength=350).pack(anchor="w", pady=(10, 4))
+        ttk.Label(side, textvariable=self.lock_status, font=("Microsoft YaHei UI", 14, "bold"),
+                  wraplength=350).pack(anchor="w", pady=(6, 3))
         self.peep_status = tk.StringVar(value="环境状态等待视觉确认")
-        ttk.Label(side, textvariable=self.peep_status, foreground=AMBER, wraplength=350).pack(anchor="w", pady=4)
+        ttk.Label(side, textvariable=self.peep_status, foreground=AMBER, wraplength=350).pack(anchor="w", pady=2)
         self.identity = tk.StringVar(value="白名单识别：等待画面")
-        ttk.Label(side, textvariable=self.identity, wraplength=350).pack(anchor="w", pady=4)
+        ttk.Label(side, textvariable=self.identity, wraplength=350).pack(anchor="w", pady=2)
         self.face_button = ttk.Button(side, text="人脸核验后发送开锁指令", command=self.face_unlock, state="disabled")
-        self.face_button.pack(fill="x", pady=(6, 3))
+        self.face_button.pack(fill="x", pady=(5, 2))
         ttk.Label(side, text="须单人白名单人脸稳定识别 2 秒。\n识别辅助没有活体检测，请保留密码核验。",
-                  foreground=MUTED, wraplength=350).pack(anchor="w", pady=(4, 5))
+                  foreground=MUTED, wraplength=350).pack(anchor="w", pady=(2, 4))
         tools = ttk.Frame(side)
-        tools.pack(fill="x", pady=4)
+        tools.pack(fill="x", pady=3)
         ttk.Button(tools, text="测试 P · 防窥", command=lambda: self.test_command("P")).pack(side="left", expand=True, fill="x", padx=(0, 4))
         ttk.Button(tools, text="测试 S · 解挂", command=self.restore_vision).pack(side="left", expand=True, fill="x", padx=(0, 4))
         ttk.Button(tools, text="测试 R · 开锁", command=lambda: self.test_command("R")).pack(side="left", expand=True, fill="x")
         ttk.Label(side, text="收到设备回报后更新锁体状态。",
-                  foreground=MUTED, wraplength=350).pack(anchor="w", pady=5)
-        ttk.Separator(side).pack(fill="x", pady=5)
+                  foreground=MUTED, wraplength=350).pack(anchor="w", pady=3)
+        ttk.Separator(side).pack(fill="x", pady=4)
         ttk.Label(side, text="取证存储", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w")
         ttk.Label(side, text=("连续分段录像已开启" if self.config["continuous_recording"] else "按事件抓拍与录像") +
                   "\n本地滚动录像：1 天 / 2 GiB。",
-                  foreground=MUTED, wraplength=350).pack(anchor="w", pady=6)
-        ttk.Button(side, text="打开本地数据目录", command=self.open_data).pack(fill="x", pady=6)
+                  foreground=MUTED, wraplength=350).pack(anchor="w", pady=4)
+        ttk.Button(side, text="打开本地数据目录", command=self.open_data).pack(fill="x", pady=4)
 
         notebook = ttk.Notebook(self.root)
         notebook.pack(fill="x", padx=22, pady=(0, 12))
@@ -179,6 +205,7 @@ class MonitorApp:
             line.pack(fill="x")
             self.demo_digits = ttk.Entry(line, show="*", width=30)
             self.demo_digits.pack(side="left")
+            self.demo_digits.bind("<KeyRelease>", self._on_demo_key)
             ttk.Button(line, text="模拟按 # 提交", command=self.demo_submit).pack(side="left", padx=10)
             for code, label in (("U", "正常"), ("D", "胁迫"), ("L", "锁定"), ("A", "门未关"), ("T", "解除锁定")):
                 ttk.Button(line, text=label, command=lambda c=code: self.events.put({"type": "event", "code": c})).pack(side="left", padx=3)
@@ -186,6 +213,64 @@ class MonitorApp:
         self.footer = tk.StringVar(value="就绪")
         tk.Label(self.root, textvariable=self.footer, bg=BG, fg=MUTED, anchor="w",
                  font=("Microsoft YaHei UI", 9)).pack(fill="x", padx=22, pady=(0, 10))
+
+    def _on_demo_key(self, _event=None):
+        if self.demo and self.controller.sim:
+            self.controller.sim.set_input_len(len(self.demo_digits.get()))
+            self.controller._sync_demo_oled()
+            self._render_oled()
+
+    def _render_oled(self, force=False):
+        rows = self.controller.oled_rows
+        peep_hang = int(self.controller.oled_state.get("peep_hang", 0))
+        sig = (rows, peep_hang)
+        if not force and sig == self.last_oled_sig:
+            return
+        self.last_oled_sig = sig
+
+        c = self.oled_canvas
+        w = max(c.winfo_width(), 320)
+        h = max(c.winfo_height(), 136)
+        c.delete("all")
+
+        # 顶部 1/4 黄色状态区与细分隔线 (模拟双色 SSD1306 物理发光分区)
+        sep_y = int(h * 0.27)
+        c.create_line(6, sep_y, w - 6, sep_y, fill="#332b14", width=1)
+
+        r0, r1, r2, r3 = rows
+        if peep_hang:
+            c.create_text(
+                w // 2, int(h * 0.56),
+                text=r2, fill=OLED_RED,
+                font=("Consolas", 15, "bold")
+            )
+            return
+
+        if r0:
+            c.create_text(
+                w // 2, int(sep_y * 0.52),
+                text=r0, fill=OLED_YELLOW,
+                font=("Microsoft YaHei UI", 12, "bold")
+            )
+        if r1:
+            c.create_text(
+                w // 2, int(h * 0.43),
+                text=r1, fill=OLED_CYAN,
+                font=("Microsoft YaHei UI", 12, "bold")
+            )
+        if r2:
+            is_mask = r2.startswith("*")
+            c.create_text(
+                w // 2, int(h * 0.66),
+                text=r2, fill=OLED_CYAN,
+                font=("Consolas", 14, "bold") if is_mask else ("Microsoft YaHei UI", 11, "bold")
+            )
+        if r3:
+            c.create_text(
+                w // 2, int(h * 0.87),
+                text=r3, fill=OLED_CYAN,
+                font=("Microsoft YaHei UI", 10)
+            )
 
     def refresh_ports(self):
         self.ports["values"] = [p[0] for p in available_ports()]
@@ -251,6 +336,7 @@ class MonitorApp:
             for event in self.controller.sim.submit(self.demo_digits.get()):
                 self.events.put(event)
             self.demo_digits.delete(0, "end")
+            self.controller._sync_demo_oled()
         except ValueError as error:
             self.footer.set(str(error))
 
@@ -273,6 +359,7 @@ class MonitorApp:
                 self.controller.handle(self.events.get_nowait())
             except queue.Empty:
                 break
+        self._render_oled()
         v = self.worker.latest() if self.worker else None
         now = time.monotonic()
         fresh = v is not None and now-v["captured_at"] <= 1 and now-v["analyzed_at"] <= 1

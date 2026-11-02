@@ -7,10 +7,32 @@ EVENTS = {
     "T": "试错锁定解除", "C": "手动紧急报警",
 }
 MAX_FRAME = 1024
+HEX6_RE = re.compile(r"^[0-9A-Fa-f]{6}$")
+
+
+def parse_oled_hex(hex_str):
+    """Parse 6-char hex payload from @O<6-hex> frame into standard oled dict."""
+    if not isinstance(hex_str, str) or not HEX6_RE.fullmatch(hex_str):
+        raise ValueError("Invalid @O hex payload")
+    b0 = int(hex_str[0:2], 16)
+    b1 = int(hex_str[2:4], 16)
+    b2 = int(hex_str[4:6], 16)
+    return {
+        "type": "oled",
+        "state_code": b0 & 0x0F,
+        "pwd_len": b1 & 0x1F,
+        "err_count": (b2 >> 6) & 0x03,
+        "countdown": b2 & 0x3F,
+        "peep_hang": (b0 >> 7) & 0x01,
+        "rec_active": (b0 >> 4) & 0x01,
+        "rec_len": (b1 >> 5) & 0x07,
+        "rec_locked": (b0 >> 5) & 0x01,
+        "door_alert": (b0 >> 6) & 0x01,
+    }
 
 
 class StreamParser:
-    """Single-byte legacy protocol and optional @JSON newline extension."""
+    """Single-byte legacy protocol, @O<6-hex> OLED snapshot, and @JSON newline extension."""
 
     def __init__(self):
         self.buffer = None
@@ -23,9 +45,13 @@ class StreamParser:
                 if byte == 10:
                     if not self.overflow:
                         try:
-                            obj = json.loads(self.buffer.decode("utf-8"))
-                            if isinstance(obj, dict):
-                                result.append(obj)
+                            text = self.buffer.decode("utf-8")
+                            if text.startswith("O") and len(text) == 7 and HEX6_RE.fullmatch(text[1:]):
+                                result.append(parse_oled_hex(text[1:]))
+                            else:
+                                obj = json.loads(text)
+                                if isinstance(obj, dict):
+                                    result.append(obj)
                         except (ValueError, UnicodeError):
                             pass
                     self.buffer, self.overflow = None, False

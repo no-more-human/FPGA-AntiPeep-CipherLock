@@ -8,6 +8,68 @@ from .simulator import SimulatedFPGA
 from .serial_comm import SerialLink
 
 
+DEFAULT_OLED_STATE = {
+    "state_code": 0,
+    "pwd_len": 0,
+    "err_count": 0,
+    "countdown": 0,
+    "peep_hang": 0,
+    "rec_active": 0,
+    "rec_len": 0,
+    "rec_locked": 0,
+    "door_alert": 0,
+}
+
+
+def decode_oled_rows(state):
+    """Strictly mirror rtl/oled_driver.v 14-state priority decoding into 4 lines."""
+    peep_hang = int(state.get("peep_hang", 0))
+    door_alert = int(state.get("door_alert", 0))
+    rec_locked = int(state.get("rec_locked", 0))
+    rec_active = int(state.get("rec_active", 0))
+    state_code = int(state.get("state_code", 0))
+    pwd_len = max(0, min(16, int(state.get("pwd_len", 0))))
+    rec_len = max(0, min(6, int(state.get("rec_len", 0))))
+    err_count = max(0, min(3, int(state.get("err_count", 0))))
+    countdown = max(0, min(60, int(state.get("countdown", 0))))
+
+    remain = max(0, 3 - err_count)
+    remain_text = f"剩余: {remain} 次"
+    cd_text = f"倒计时: {countdown:02d} 秒"
+    eff_len = rec_len if rec_active else pwd_len
+    stars = "*" * eff_len
+
+    if peep_hang:
+        return ("", "", "----------------", "")
+    if door_alert:
+        return ("箱门已开启", "警告:箱门开", stars, "请确认门锁")
+    if rec_locked:
+        return ("应急重置", "系统已锁定", cd_text, "键盘已锁定")
+    if rec_active:
+        return ("应急重置", "请输入密码", "*" * rec_len, "# 确认   * 清除")
+    if state_code == 0:
+        return ("欢迎使用", "请输入密码", "", remain_text)
+    if state_code == 1:
+        return ("欢迎使用", "请输入密码", "*" * pwd_len, remain_text)
+    if state_code == 2:
+        return ("欢迎使用", "开锁成功", "", "门锁已开启")
+    if state_code == 3:
+        return ("欢迎使用", "密码错误", "", remain_text)
+    if state_code == 4:
+        return ("欢迎使用", "系统已锁定", cd_text, "键盘已锁定")
+    if state_code == 5:
+        return ("新用户录入", "输入新密码", "*" * pwd_len, "# 确认   * 清除")
+    if state_code in (6, 9):
+        return ("请再次确认", "重复新密码", "*" * pwd_len, "# 确认   * 清除")
+    if state_code == 7:
+        return ("修改密码", "输入旧密码", "*" * pwd_len, "# 确认   * 清除")
+    if state_code == 8:
+        return ("输入新密码", "输入新密码", "*" * pwd_len, "# 确认   * 清除")
+    if state_code == 10:
+        return ("设置成功", "密码已更新", "", remain_text)
+    return ("欢迎使用", "请输入密码", "*" * pwd_len, remain_text)
+
+
 class Controller:
     def __init__(self, config, audit, recorder, emit, demo=False):
         self.config, self.audit, self.recorder, self.emit = config, audit, recorder, emit
@@ -17,6 +79,8 @@ class Controller:
         self.connected = demo
         self.device_seen = demo
         self.state = SafeState()
+        self.oled_state = dict(DEFAULT_OLED_STATE)
+        self.oled_rows = decode_oled_rows(self.oled_state)
         self.peeping = False
         self.vision = None
         self.vision_paused = True
@@ -31,6 +95,17 @@ class Controller:
         if demo:
             self.log("DEMO", "模拟演示：无物理硬件连接，密码仅存于内存")
             self.state.apply("K")
+            self._sync_demo_oled()
+
+    def _sync_demo_oled(self):
+        if self.demo and self.sim:
+            snap = self.sim.oled_snapshot()
+            snap.pop("type", None)
+            self.oled_state.update(snap)
+            self.oled_rows = decode_oled_rows(self.oled_state)
+
+    def decode_oled(self):
+        return decode_oled_rows(self.oled_state)
 
     def log(self, code, detail, sensitive=False):
         event_id = self.audit.add(code, detail, sensitive)
@@ -55,6 +130,8 @@ class Controller:
         self.device_seen = self.demo
         if not self.demo:
             self.state.disconnected()
+            self.oled_state = dict(DEFAULT_OLED_STATE)
+            self.oled_rows = decode_oled_rows(self.oled_state)
         for request in self.pending.values():
             request["callback"](False, "通信中断，修改结果未知；请在实体键盘核验")
         self.pending.clear()
@@ -63,6 +140,7 @@ class Controller:
         if self.demo:
             for event in self.sim.command(command):
                 self.emit(event)
+            self._sync_demo_oled()
             success = True
         else:
             success = bool(self.link and self.link.send(command))
@@ -125,6 +203,7 @@ class Controller:
         if self.demo:
             for event in self.sim.request(message):
                 self.emit(event)
+            self._sync_demo_oled()
             sent = True
         else:
             sent = self.link.request(message) if self.link else False
@@ -137,6 +216,7 @@ class Controller:
         if self.demo:
             for event in self.sim.tick():
                 self.emit(event)
+            self._sync_demo_oled()
         now = time.monotonic()
         self.state.tick(now)
         for request_id, request in list(self.pending.items()):
@@ -147,7 +227,13 @@ class Controller:
 
     def handle(self, msg):
         kind = msg.get("type")
-        if kind == "link":
+        if kind == "oled":
+            self.device_seen = True
+            for key in DEFAULT_OLED_STATE:
+                if key in msg:
+                    self.oled_state[key] = int(msg[key])
+            self.oled_rows = decode_oled_rows(self.oled_state)
+        elif kind == "link":
             connected = bool(msg.get("connected"))
             if self.connected != connected:
                 self.connected = connected
@@ -155,6 +241,8 @@ class Controller:
                 self.log("LINK", "串口已打开，等待设备回报" if connected else "串口断开，正在重连")
                 if not connected:
                     self.state.disconnected()
+                    self.oled_state = dict(DEFAULT_OLED_STATE)
+                    self.oled_rows = decode_oled_rows(self.oled_state)
                     for request in self.pending.values():
                         request["callback"](False, "通信中断，修改结果未知；请在实体键盘核验")
                     self.pending.clear()
@@ -191,6 +279,19 @@ class Controller:
                 self.last_duress_at = now
             self.device_seen = True
             self.state.apply(code, now)
+            if self.demo and self.sim:
+                if code == "A":
+                    self.sim.door_alert = True
+                elif code == "K":
+                    self.sim.door_alert = False
+                elif code == "L" and not self.sim.lock_until:
+                    self.sim.lock_until = self.sim.clock() + 60
+                elif code == "T":
+                    self.sim.lock_until = 0
+                    self.sim.failures = 0
+                elif code in ("U", "D") and not self.sim.open_until:
+                    self.sim.open_until = self.sim.clock() + 3
+                self._sync_demo_oled()
             sensitive = code in ("D", "C")
             event_id = self.log(code, EVENTS[code], sensitive=sensitive)
             if code == "D" and self.config["alarm_display"] == "silent":

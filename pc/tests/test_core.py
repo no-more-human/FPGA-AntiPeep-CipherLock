@@ -9,7 +9,7 @@ from pathlib import Path
 
 from modules.audit import AuditStore
 from modules.config import load_config
-from modules.controller import Controller
+from modules.controller import Controller, decode_oled_rows
 from modules.policy import VisionPolicy, Decision
 from modules.protocol import StreamParser, encode
 from modules.simulator import SimulatedFPGA
@@ -53,6 +53,73 @@ class ProtocolTests(unittest.TestCase):
         result = parser.feed(b"@"+b"D"*2000+b"\nU")
         self.assertEqual(result, [{"type": "event", "code": "U"}])
         self.assertEqual(parser.feed(b"@\xff\nL"), [{"type": "event", "code": "L"}])
+
+    def test_oled_hex_frame_parsing_and_interleaved_events(self):
+        parser = StreamParser()
+        # Byte0=0x01 (state_code=1), Byte1=0x05 (pwd_len=5), Byte2=0x6D (err_count=1, countdown=45)
+        result = parser.feed(b"@O01056D\nE@O800000\n")
+        self.assertEqual(len(result), 3)
+        self.assertEqual(result[0], {
+            "type": "oled",
+            "state_code": 1,
+            "pwd_len": 5,
+            "err_count": 1,
+            "countdown": 45,
+            "peep_hang": 0,
+            "rec_active": 0,
+            "rec_len": 0,
+            "rec_locked": 0,
+            "door_alert": 0,
+        })
+        self.assertEqual(result[1], {"type": "event", "code": "E"})
+        self.assertEqual(result[2]["type"], "oled")
+        self.assertEqual(result[2]["peep_hang"], 1)
+
+    def test_virtual_oled_14_states_decoding(self):
+        # 1. peep_hang=1
+        self.assertEqual(decode_oled_rows({"peep_hang": 1, "door_alert": 1, "state_code": 2}),
+                         ("", "", "----------------", ""))
+        # 2. door_alert=1
+        self.assertEqual(decode_oled_rows({"door_alert": 1, "pwd_len": 4}),
+                         ("箱门已开启", "警告:箱门开", "****", "请确认门锁"))
+        # 3. rec_locked=1
+        self.assertEqual(decode_oled_rows({"rec_locked": 1, "countdown": 58}),
+                         ("应急重置", "系统已锁定", "倒计时: 58 秒", "键盘已锁定"))
+        # 4. rec_active=1
+        self.assertEqual(decode_oled_rows({"rec_active": 1, "rec_len": 3}),
+                         ("应急重置", "请输入密码", "***", "# 确认   * 清除"))
+        # 5. state_code=0 (IDLE)
+        self.assertEqual(decode_oled_rows({"state_code": 0, "err_count": 0}),
+                         ("欢迎使用", "请输入密码", "", "剩余: 3 次"))
+        # 6. state_code=1 (INPUT)
+        self.assertEqual(decode_oled_rows({"state_code": 1, "pwd_len": 6, "err_count": 1}),
+                         ("欢迎使用", "请输入密码", "******", "剩余: 2 次"))
+        # 7. state_code=2 (SUCCESS)
+        self.assertEqual(decode_oled_rows({"state_code": 2}),
+                         ("欢迎使用", "开锁成功", "", "门锁已开启"))
+        # 8. state_code=3 (ERROR)
+        self.assertEqual(decode_oled_rows({"state_code": 3, "err_count": 2}),
+                         ("欢迎使用", "密码错误", "", "剩余: 1 次"))
+        # 9. state_code=4 (LOCKED)
+        self.assertEqual(decode_oled_rows({"state_code": 4, "countdown": 9}),
+                         ("欢迎使用", "系统已锁定", "倒计时: 09 秒", "键盘已锁定"))
+        # 10. state_code=5 (SET_NEW)
+        self.assertEqual(decode_oled_rows({"state_code": 5, "pwd_len": 2}),
+                         ("新用户录入", "输入新密码", "**", "# 确认   * 清除"))
+        # 11. state_code=6/9 (SET_CFM / CHG_CFM)
+        self.assertEqual(decode_oled_rows({"state_code": 6, "pwd_len": 6}),
+                         ("请再次确认", "重复新密码", "******", "# 确认   * 清除"))
+        self.assertEqual(decode_oled_rows({"state_code": 9, "pwd_len": 5}),
+                         ("请再次确认", "重复新密码", "*****", "# 确认   * 清除"))
+        # 12. state_code=7 (CHG_AUTH)
+        self.assertEqual(decode_oled_rows({"state_code": 7, "pwd_len": 4}),
+                         ("修改密码", "输入旧密码", "****", "# 确认   * 清除"))
+        # 13. state_code=8 (CHG_NEW)
+        self.assertEqual(decode_oled_rows({"state_code": 8, "pwd_len": 3}),
+                         ("输入新密码", "输入新密码", "***", "# 确认   * 清除"))
+        # 14. state_code=10 (OP_DONE)
+        self.assertEqual(decode_oled_rows({"state_code": 10, "err_count": 0}),
+                         ("设置成功", "密码已更新", "", "剩余: 3 次"))
 
 
 class PolicyTests(unittest.TestCase):
