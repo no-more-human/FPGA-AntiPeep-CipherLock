@@ -97,7 +97,7 @@ class Controller:
         if not v["decision"].face_ready or v["decision"].peeping or self.peeping:
             raise ValueError("需单人白名单人脸连续稳定识别，且没有防窥告警")
         if self.state.lockout:
-            raise ValueError("下位机处于试错锁定；需等待解除状态 T")
+            raise ValueError("下位机处于 60s 试错锁定倒计时中，请等待自动解除")
         if now-self.last_remote < 5:
             raise ValueError("开锁指令冷却中，请稍后")
         if not self.send("R"):

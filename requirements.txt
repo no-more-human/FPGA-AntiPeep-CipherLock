@@ -20,7 +20,5 @@ ultralytics>=8.0.0
 # --- 4. 上位机图形用户界面 (GUI) ---
 # 上位机主界面 (pc/main.py) 与安保监控端 (pc/security_monitor.py) 采用 Python 标准库内置 tkinter 构建
 
-# --- 5. 工具库与日志增强 ---
+# --- 5. 工具库与数值计算 ---
 numpy>=1.24.0,<3
-colorama>=0.4.6
-openpyxl>=3.1.2
