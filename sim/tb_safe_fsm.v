@@ -31,14 +31,16 @@ module tb_safe_fsm;
     reg        key_valid;
     reg        duress_clear;
     reg        peep_hang;
+    reg        pwd_reset;
 
     wire [3:0] state_code;
     wire [4:0] pwd_len;
     wire [1:0] err_count;
-    wire [6:0] lock_countdown;
+    wire [8:0] lock_countdown;
     wire       unlock_en;
     wire       duress_alarm;
     wire       duress_trig;
+    wire       pwd_err_pulse;
     wire       lock_timeout_pulse;
     wire       pwd_changed;
     wire       beep_key;
@@ -59,6 +61,7 @@ module tb_safe_fsm;
         .key_valid         (key_valid),
         .duress_clear      (duress_clear),
         .peep_hang         (peep_hang),
+        .pwd_reset         (pwd_reset),
         .state_code        (state_code),
         .pwd_len           (pwd_len),
         .err_count         (err_count),
@@ -66,6 +69,7 @@ module tb_safe_fsm;
         .unlock_en         (unlock_en),
         .duress_alarm      (duress_alarm),
         .duress_trig       (duress_trig),
+        .pwd_err_pulse     (pwd_err_pulse),
         .lock_timeout_pulse(lock_timeout_pulse),
         .pwd_changed       (pwd_changed),
         .beep_key          (beep_key),
@@ -116,6 +120,7 @@ module tb_safe_fsm;
         key_valid    = 1'b0;
         duress_clear = 1'b0;
         peep_hang    = 1'b0;
+        pwd_reset    = 1'b0;
         #(CLK_PERIOD * 20);
         rst_n        = 1'b1;
         #(CLK_PERIOD * 20);
@@ -441,6 +446,53 @@ module tb_safe_fsm;
             $display("[PASS] Setting password to DURESS_PWD ('654321') rejected with S_ERROR!");
         else
             $display("[FAIL] DURESS_PWD conflict not rejected, state=%d", state_code);
+
+        // 漏洞 1.1 修复验证: 模拟按 RST 键, 验证密码不丢失、锁定不绕过
+        $display("[TEST 22] Testing RST key protection (Fix 1.1)...");
+        // 此时密码应仍为 888888，按 RST 复位
+        rst_n = 1'b0;
+        #(CLK_PERIOD * 20);
+        rst_n = 1'b1;
+        #(CLK_PERIOD * 20);
+        // 用旧默认密码 123456 开门，应该失败
+        press_key(4'h1); press_key(4'h2); press_key(4'h3);
+        press_key(4'h4); press_key(4'h5); press_key(4'h6);
+        press_key(4'hF);
+        #(CLK_PERIOD * 20);
+        if (state_code == 4'd3 && unlock_en == 1'b0)
+            $display("[PASS] Reset did NOT restore factory password! 123456 rejected.");
+        else
+            $display("[FAIL] RST key erroneously restored factory password!");
+
+        // 用用户修改的密码 888888 开门，应该成功
+        #(CLK_PERIOD * 2000);
+        press_key(4'h8); press_key(4'h8); press_key(4'h8);
+        press_key(4'h8); press_key(4'h8); press_key(4'h8);
+        press_key(4'hF);
+        #(CLK_PERIOD * 20);
+        if (state_code == 4'd2 && unlock_en == 1'b1)
+            $display("[PASS] User password '888888' survived RST and unlocked successfully!");
+        else
+            $display("[FAIL] User password failed after RST, state=%d", state_code);
+        press_key(4'hC);
+        #(CLK_PERIOD * 20);
+
+        // 恢复码复位验证
+        $display("[TEST 23] Testing pwd_reset pulse (Recovery)...");
+        pwd_reset = 1'b1;
+        #(CLK_PERIOD * 2);
+        pwd_reset = 1'b0;
+        #(CLK_PERIOD * 20);
+        // 此时出厂默认密码 123456 应该生效
+        press_key(4'h1); press_key(4'h2); press_key(4'h3);
+        press_key(4'h4); press_key(4'h5); press_key(4'h6);
+        press_key(4'hF);
+        #(CLK_PERIOD * 20);
+        if (state_code == 4'd2 && unlock_en == 1'b1)
+            $display("[PASS] Factory password '123456' successfully restored by pwd_reset!");
+        else
+            $display("[FAIL] Factory password failed after pwd_reset, state=%d", state_code);
+        press_key(4'hC);
 
         if (lock_to_cnt >= 1)
             $display("[PASS] lock_timeout_pulse verified (count=%0d).", lock_to_cnt);

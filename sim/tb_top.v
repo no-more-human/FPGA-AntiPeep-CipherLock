@@ -97,21 +97,31 @@ module tb_top;
         uart_send_byte(8'h53);
         #(CLK_PERIOD * 20);
 
-        // 模拟 PC 下发 'R' (0x52) 远程开锁指令
+        // 漏洞 1.3 挑战-应答验证:
+        // PC 下发 'R' (0x52) 远程开锁请求，此时未应答前 led[2] 应保持为 0
         uart_send_byte(8'h52);
         #(CLK_PERIOD * 20);
-        if (led[2] == 1'b1)
-            $display("[PASS] Remote unlock 'R' command asserted unlock_all (led[2]=1).");
+        if (led[2] == 1'b0)
+            $display("[PASS] Standalone 'R' without auth response did NOT unlock (Fix 1.3 verified).");
         else
-            $display("[FAIL] Remote unlock 'R' failed to assert led[2]=1.");
+            $display("[FAIL] Vulnerability 1.3 still exists: 'R' unlocked without auth!");
 
-        // 模拟开门
+        // 模拟关锁待机下撬门报警验证 (Fix 1.4)
+        $display("[TEST] Tamper detection test (door opened while locked)...");
         door_gpio = 1'b1;
-        #(CLK_PERIOD * 2000);
+        #(CLK_PERIOD * 50000); // 持续开门
+        if (led[7] == 1'b1)
+            $display("[PASS] Tamper alarm asserted led[7]=1 when door was forced open (Fix 1.4 verified).");
+        else
+            $display("[FAIL] Tamper alarm failed to assert led[7].");
 
-        // 门关严
+        // 门重新关严，解除防撬
         door_gpio = 1'b0;
-        #(CLK_PERIOD * 2000);
+        #(CLK_PERIOD * 20000);
+        if (led[7] == 1'b0)
+            $display("[PASS] Tamper alarm cleared after door closed.");
+        else
+            $display("[FAIL] Tamper alarm not cleared after door closed.");
 
         $display("[INFO] Top module connectivity & multi-peripheral integration verified.");
         $finish;

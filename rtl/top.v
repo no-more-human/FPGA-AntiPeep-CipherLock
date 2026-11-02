@@ -55,10 +55,9 @@ always @(posedge clk_50M or negedge rst_n) begin
 end
 
 // --------------------------------------------------------------------------
-// 1. 系统基准节拍发生器 (产生 1kHz / 100Hz 同步使能脉冲)
+// 1. 系统基准节拍发生器 (产生 1kHz 同步使能脉冲)
 // --------------------------------------------------------------------------
 wire tick_1k;
-wire tick_100;
 
 clk_tick #(
     .CLK_FREQ(50_000_000)
@@ -66,7 +65,7 @@ clk_tick #(
     .clk     (clk_50M),
     .rst_n   (rst_sync_n),
     .tick_1k (tick_1k),
-    .tick_100(tick_100)
+    .tick_100() // 100Hz 未用悬空 (清理瑕疵 2.5)
 );
 
 // --------------------------------------------------------------------------
@@ -93,14 +92,12 @@ keypad_scan #(
 wire peep_hang;        // 1 就是有人在偷看
 wire remote_unlock;    // PC 让远程开的
 wire cmd_safe;         // 收到 'S' 那一拍
-wire uart_is_sending;
-wire [7:0] uart_last_byte;
 
 // 恢复码通道
 wire       rec_active;
 wire       reset_req;
 wire [2:0] rec_len;
-wire [1:0] rec_try;
+wire [1:0] rec_ui_mode;
 wire       rec_beep_key;
 wire       rec_beep_err;
 wire       rec_err;
@@ -111,16 +108,6 @@ wire [7:0] rec_countdown;
 // 仅在正在走恢复码流程的时候屏蔽主状态机键盘；防窥挂起 peep_hang 传入 safe_fsm 内部处理，保留反挟持能力
 wire key_valid_fsm = key_valid && !rec_active;
 
-// 恢复成功就把 safe_fsm 自己复位一下, 它的 current_pwd 在复位分支里会
-// 被打回 DEFAULT_PWD(123456)
-reg rec_rst_n;
-always @(posedge clk_50M or negedge rst_sync_n) begin
-    if (!rst_sync_n)      rec_rst_n <= 1'b1;
-    else if (reset_req)   rec_rst_n <= 1'b0;
-    else                  rec_rst_n <= 1'b1;
-end
-wire safe_rst_n = rst_sync_n & rec_rst_n;
-
 // 本地密码开锁与 PC 远程开锁合流
 wire unlock_all;
 
@@ -130,12 +117,11 @@ wire unlock_all;
 wire [3:0] state_code;
 wire [4:0] pwd_len;
 wire [1:0] err_count;
-wire [6:0] lock_countdown;
+wire [8:0] lock_countdown;
 wire       unlock_en;
-wire       duress_alarm;
 wire       duress_trig;
+wire       pwd_err_pulse;
 wire       lock_timeout_pulse;
-wire       pwd_changed;
 wire       beep_key;
 wire       beep_err;
 wire       beep_lock;
@@ -144,25 +130,27 @@ wire       beep_succ;
 safe_fsm #(
     .DEFAULT_PWD       ({4'h1, 4'h2, 4'h3, 4'h4, 4'h5, 4'h6}), // 预设密码: 123456
     .DURESS_PWD        ({4'h6, 4'h5, 4'h4, 4'h3, 4'h2, 4'h1}), // 反挟持密码: 654321
-    .LOCK_TIMEOUT_SEC  (60),                                  // 锁定 60 秒
+    .LOCK_TIMEOUT_SEC  (60),                                  // 首档锁定 60 秒
     .OP_TIMEOUT_SEC    (15)                                   // 15 秒无操作看门狗
 ) u_safe_fsm (
     .clk               (clk_50M),
-    .rst_n             (safe_rst_n),
+    .rst_n             (rst_sync_n),      // 漏洞 1.1 修复: safe_fsm 复位不重置密码与锁定
     .tick_1k           (tick_1k),
     .key_val           (key_val),
     .key_valid         (key_valid_fsm),
     .duress_clear      (cmd_safe),        // 收到 'S' 清反挟持粘滞报警
     .peep_hang         (peep_hang),       // 防窥挂起输入，内部保留反挟持求救
+    .pwd_reset         (reset_req),       // 恢复码验证成功触发重置出厂密码
     .state_code        (state_code),
     .pwd_len           (pwd_len),
     .err_count         (err_count),
     .lock_countdown    (lock_countdown),
     .unlock_en         (unlock_en),
-    .duress_alarm      (duress_alarm),
+    .duress_alarm      (),                // 瑕疵 2.5 清理: 未用信号悬空
     .duress_trig       (duress_trig),
+    .pwd_err_pulse     (pwd_err_pulse),
     .lock_timeout_pulse(lock_timeout_pulse),
-    .pwd_changed       (pwd_changed),
+    .pwd_changed       (),                // 瑕疵 2.5 清理: 未用信号悬空
     .beep_key          (beep_key),
     .beep_err          (beep_err),
     .beep_lock         (beep_lock),
@@ -185,12 +173,13 @@ wire relock_pulse = !unlock_all && unlock_en_d1;
 wire evt_unlock   = unlock_rise && !duress_trig;
 
 // --------------------------------------------------------------------------
-// 4. 板载 SW1 门磁模拟检测及 15 秒超时报警
+// 4. 板载 SW1 门磁模拟检测及 15 秒超时报警 / 锁闭防撬报警
 // --------------------------------------------------------------------------
 wire       door_open;
 wire       door_alert;
 wire       door_alert_pulse;
-wire [3:0] door_open_sec;
+wire       tamper_alert;
+wire       tamper_pulse;
 
 door_sensor #(
     .TIMEOUT_SEC  (15), // 开锁后门未关 15 秒超时报警
@@ -204,14 +193,19 @@ door_sensor #(
     .door_open   (door_open),
     .door_alert  (door_alert),
     .alert_pulse (door_alert_pulse),
-    .open_sec_cnt(door_open_sec)
+    .tamper_alert(tamper_alert),
+    .tamper_pulse(tamper_pulse),
+    .open_sec_cnt()             // 未用悬空 (清理瑕疵 2.5)
 );
+
+wire door_alert_comb = door_alert | tamper_alert;
 
 // --------------------------------------------------------------------------
 // 5. 板载无源蜂鸣器 PWM 驱动 (按键音、错误警告音、锁定严重警报、成功和弦，0 DSP)
 // --------------------------------------------------------------------------
+wire auth_err;
 wire beep_key_comb = beep_key | rec_beep_key;
-wire beep_err_comb = beep_err | door_alert_pulse | rec_beep_err | rec_err;
+wire beep_err_comb = beep_err | rec_beep_err | rec_err | auth_err;
 
 buzzer_driver #(
     .CLK_FREQ(50_000_000)
@@ -223,6 +217,7 @@ buzzer_driver #(
     .beep_err  (beep_err_comb),
     .beep_lock (beep_lock),
     .beep_succ (beep_succ | rec_ok),
+    .beep_alarm(door_alert_comb),
     .buzzer_out(buzzer_out)
 );
 
@@ -233,8 +228,8 @@ buzzer_driver #(
 wire [7:0] seg_out_raw;
 wire [3:0] seg_cs_raw;
 wire [3:0] seg_state_mux = rec_locked ? 4'd4 : (rec_active ? 4'd11 : state_code);
-wire [4:0] seg_len_mux   = rec_active ? {2'b00, rec_len} : pwd_len;
-wire [6:0] seg_cd_mux    = rec_locked ? rec_countdown[6:0] : lock_countdown;
+wire [4:0] seg_len_mux   = rec_active ? ((rec_ui_mode == 2'd1) ? 5'd30 : ((rec_ui_mode == 2'd2) ? 5'd31 : {2'b00, rec_len})) : pwd_len;
+wire [8:0] seg_cd_mux    = rec_locked ? {1'b0, rec_countdown} : lock_countdown;
 
 seg_display u_seg_display (
     .clk           (clk_50M),
@@ -244,7 +239,7 @@ seg_display u_seg_display (
     .pwd_len       (seg_len_mux),
     .err_count     (err_count),
     .lock_countdown(seg_cd_mux),
-    .door_alert    (door_alert),
+    .door_alert    (door_alert_comb),
     .seg_out       (seg_out_raw),
     .seg_cs        (seg_cs_raw)
 );
@@ -256,7 +251,7 @@ always @(posedge clk_50M or negedge rst_sync_n) begin
     if (!rst_sync_n) begin
         seg_out_r <= 8'h00;
         seg_cs_r  <= 4'hF;
-    end else if (peep_hang && !door_alert) begin
+    end else if (peep_hang && !door_alert_comb) begin
         seg_out_r <= 8'h00;
         seg_cs_r  <= 4'hF;
     end else begin
@@ -307,7 +302,7 @@ assign led[3] = (state_code == 4'd4) | rec_locked;
 assign led[4] = (state_code == 4'd3);
 assign led[5] = door_open;
 assign led[6] = (err_count >= 2'd1);
-assign led[7] = (err_count >= 2'd2) | door_alert;
+assign led[7] = (err_count >= 2'd2) | door_alert_comb;
 
 // --------------------------------------------------------------------------
 // 9. UART 邮差与 PC 数字孪生 OLED 状态快照同步
@@ -326,24 +321,26 @@ uart_mailman #(
     .evt_lock      (beep_lock),
     .evt_duress    (duress_trig),
     .evt_door      (door_alert_pulse),
+    .evt_tamper    (tamper_pulse),
     .evt_lock_end  (lock_timeout_pulse),
     .evt_relock    (relock_pulse),
-    .evt_pwd_err   (beep_err),
+    .evt_pwd_err   (pwd_err_pulse),
     .is_locked     (state_code == 4'd4),
     .state_code    (state_code),
     .pwd_len       (pwd_len),
     .err_count     (err_count),
-    .lock_countdown(lock_countdown),
+    .lock_countdown(lock_countdown[6:0]),
     .rec_active    (rec_active),
     .rec_len       (rec_len),
     .rec_locked    (rec_locked),
     .rec_countdown (rec_countdown[5:0]),
-    .door_alert    (door_alert),
+    .door_alert    (door_alert_comb),
     .peep_hang     (peep_hang),
     .remote_unlock (remote_unlock),
+    .auth_err      (auth_err),
     .cmd_safe      (cmd_safe),
-    .is_sending    (uart_is_sending),
-    .the_letter    (uart_last_byte)
+    .is_sending    (), // 未用悬空 (清理瑕疵 2.5)
+    .the_letter    ()  // 未用悬空 (清理瑕疵 2.5)
 );
 
 // --------------------------------------------------------------------------
@@ -368,7 +365,8 @@ recovery_mgr #(
     .rec_active   (rec_active),
     .reset_req    (reset_req),
     .rec_len      (rec_len),
-    .rec_try      (rec_try),
+    .rec_try      (), // 未用悬空 (清理瑕疵 2.5)
+    .rec_ui_mode  (rec_ui_mode),
     .rec_beep_key (rec_beep_key),
     .rec_beep_err (rec_beep_err),
     .rec_err      (rec_err),

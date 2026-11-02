@@ -1,4 +1,4 @@
-import threading
+﻿import threading
 import time
 import serial
 from serial.tools import list_ports
@@ -60,6 +60,10 @@ class SerialLink:
             raise ValueError("不支持的单字节命令")
         return self._write(command.encode("ascii"))
 
+    def respond_challenge(self, nonce):
+        response = ((nonce ^ 0x5A) + 0x7E) & 0xFF
+        return self._write(b"!" + bytes([response]))
+
     def request(self, message):
         return self._write(encode(message))
 
@@ -77,3 +81,4 @@ class SerialLink:
     def close(self):
         self.stop_event.set()
         self.thread.join(timeout=2)
+

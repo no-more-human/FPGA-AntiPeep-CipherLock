@@ -19,7 +19,7 @@ module seg_display(
     input  wire [3:0] state_code,      // 0:IDLE, 1:INPUT, 2:SUCCESS, 3:ERROR, 4:LOCKED, 5~10:SET/CHG
     input  wire [4:0] pwd_len,         // 当前已输入密码长度 (日常开锁 0~16, 录入/改密 0~6)
     input  wire [1:0] err_count,       // 输错次数 (0~3)
-    input  wire [6:0] lock_countdown,  // 锁定剩余倒计时秒数 (0~60)
+    input  wire [8:0] lock_countdown,  // 锁定剩余倒计时秒数 (0~300)
     input  wire       door_alert,      // 门未关超时报警使能 (显示 AL-dr)
     
     // 硬件物理引脚输出
@@ -83,16 +83,27 @@ reg [7:0] seg_buf1; // 第 3 位 (COM3, CS[1])
 reg [7:0] seg_buf2; // 第 2 位 (COM2, CS[2])
 reg [7:0] seg_buf3; // 最左位 (COM1, CS[3])
 
-wire [3:0] lock_tens = (lock_countdown >= 7'd60) ? 4'd6 :
-                       (lock_countdown >= 7'd50) ? 4'd5 :
-                       (lock_countdown >= 7'd40) ? 4'd4 :
-                       (lock_countdown >= 7'd30) ? 4'd3 :
-                       (lock_countdown >= 7'd20) ? 4'd2 :
-                       (lock_countdown >= 7'd10) ? 4'd1 : 4'd0;
+wire       lock_ge100     = (lock_countdown >= 9'd100);
+wire [1:0] lock_hundreds  = (lock_countdown >= 9'd300) ? 2'd3 :
+                            (lock_countdown >= 9'd200) ? 2'd2 :
+                            (lock_countdown >= 9'd100) ? 2'd1 : 2'd0;
+wire [8:0] lock_rem100    = (lock_hundreds == 2'd3) ? (lock_countdown - 9'd300) :
+                            (lock_hundreds == 2'd2) ? (lock_countdown - 9'd200) :
+                            (lock_hundreds == 2'd1) ? (lock_countdown - 9'd100) : lock_countdown;
+
+wire [3:0] lock_tens = (lock_rem100 >= 9'd90) ? 4'd9 :
+                       (lock_rem100 >= 9'd80) ? 4'd8 :
+                       (lock_rem100 >= 9'd70) ? 4'd7 :
+                       (lock_rem100 >= 9'd60) ? 4'd6 :
+                       (lock_rem100 >= 9'd50) ? 4'd5 :
+                       (lock_rem100 >= 9'd40) ? 4'd4 :
+                       (lock_rem100 >= 9'd30) ? 4'd3 :
+                       (lock_rem100 >= 9'd20) ? 4'd2 :
+                       (lock_rem100 >= 9'd10) ? 4'd1 : 4'd0;
 
 wire [6:0] lock_tens_x10 = {lock_tens, 3'b000} + {2'b00, lock_tens, 1'b0}; // 8x + 2x = 10x (完全消除DSP)
-wire [6:0] lock_ones_7b  = lock_countdown - lock_tens_x10;
-wire [3:0] lock_ones     = lock_ones_7b[3:0];
+wire [8:0] lock_ones_9b  = lock_rem100 - {2'b00, lock_tens_x10};
+wire [3:0] lock_ones     = lock_ones_9b[3:0];
 
 // 输入位数十位/个位 (虚位密码最长 16 位，0~16)
 wire       len_ge10  = (pwd_len >= 5'd10);
@@ -129,9 +140,9 @@ always @(*) begin
             seg_buf0 = digit_to_seg({2'b00, err_count});
         end
         
-        4'd4: begin // LOCKED: 显示 "L-xx" (例如 "L-60", "L-59" ... "L-01")
+        4'd4: begin // LOCKED: 阶梯锁定 (>=100s显示 "L300" / "L120", <100s显示 "L-xx")
             seg_buf3 = SEG_L;
-            seg_buf2 = SEG_DASH;
+            seg_buf2 = lock_ge100 ? digit_to_seg({2'b00, lock_hundreds}) : SEG_DASH;
             seg_buf1 = digit_to_seg(lock_tens);
             seg_buf0 = digit_to_seg(lock_ones);
         end
@@ -178,11 +189,26 @@ always @(*) begin
             seg_buf0 = SEG_S;
         end
 
-        4'd11: begin // 应急恢复模式: 显示 "rE-n" (前两位 rE, 后两位 -n)
-            seg_buf3 = SEG_r;
-            seg_buf2 = SEG_E;
-            seg_buf1 = SEG_DASH;
-            seg_buf0 = digit_to_seg(pwd_len[3:0]);
+        4'd11: begin // 应急恢复模式: 瑕疵 2.6 修复 (成功显示 PASS, 失败显示 rE-E, 输码显示 rE-n)
+            if (pwd_len == 5'd30) begin
+                // 恢复成功
+                seg_buf3 = SEG_P;
+                seg_buf2 = SEG_A;
+                seg_buf1 = SEG_S;
+                seg_buf0 = SEG_S;
+            end else if (pwd_len == 5'd31) begin
+                // 恢复失败
+                seg_buf3 = SEG_r;
+                seg_buf2 = SEG_E;
+                seg_buf1 = SEG_DASH;
+                seg_buf0 = SEG_E;
+            end else begin
+                // 输入恢复码中
+                seg_buf3 = SEG_r;
+                seg_buf2 = SEG_E;
+                seg_buf1 = SEG_DASH;
+                seg_buf0 = digit_to_seg(pwd_len[3:0]);
+            end
         end
         
         default: begin
@@ -204,11 +230,11 @@ end
 
 // --------------------------------------------------------------------------
 // 3. 4 位动态扫描逻辑: 1ms 刷新 1 位, 整屏 250Hz, 绝对无闪烁
-// CS 编码定义 (低电平选通):
-//   cs_idx = 2'd0 -> seg_cs = 4'b1110 (选通 COM4, 最右位 LSB)
-//   cs_idx = 2'd1 -> seg_cs = 4'b1101 (选通 COM3, 第 3 位)
-//   cs_idx = 2'd2 -> seg_cs = 4'b1011 (选通 COM2, 第 2 位)
-//   cs_idx = 2'd3 -> seg_cs = 4'b0111 (选通 COM1, 最左位 MSB)
+// CS 编码与引脚定义 (依据 lock.adc: seg_cs[0]=C9=COM1 最左位, seg_cs[3]=A3=COM4 最右位):
+//   cs_idx = 2'd0 -> seg_cs = 4'b1110 (选通 COM1, 最左位 MSB, 输出 seg_buf3)
+//   cs_idx = 2'd1 -> seg_cs = 4'b1101 (选通 COM2, 第 2 位,     输出 seg_buf2)
+//   cs_idx = 2'd2 -> seg_cs = 4'b1011 (选通 COM3, 第 3 位,     输出 seg_buf1)
+//   cs_idx = 2'd3 -> seg_cs = 4'b0111 (选通 COM4, 最右位 LSB, 输出 seg_buf0)
 // --------------------------------------------------------------------------
 reg [1:0] scan_idx;
 
@@ -221,20 +247,20 @@ always @(posedge clk or negedge rst_n) begin
         scan_idx <= scan_idx + 2'd1;
         case (scan_idx)
             2'd0: begin
-                seg_cs  <= 4'b1110; // 选通 COM4
-                seg_out <= seg_buf0;
+                seg_cs  <= 4'b1110; // 选通 COM1 (最左位)
+                seg_out <= seg_buf3;
             end
             2'd1: begin
-                seg_cs  <= 4'b1101; // 选通 COM3
-                seg_out <= seg_buf1;
-            end
-            2'd2: begin
-                seg_cs  <= 4'b1011; // 选通 COM2
+                seg_cs  <= 4'b1101; // 选通 COM2 (第 2 位)
                 seg_out <= seg_buf2;
             end
+            2'd2: begin
+                seg_cs  <= 4'b1011; // 选通 COM3 (第 3 位)
+                seg_out <= seg_buf1;
+            end
             2'd3: begin
-                seg_cs  <= 4'b0111; // 选通 COM1
-                seg_out <= seg_buf3;
+                seg_cs  <= 4'b0111; // 选通 COM4 (最右位)
+                seg_out <= seg_buf0;
             end
         endcase
     end

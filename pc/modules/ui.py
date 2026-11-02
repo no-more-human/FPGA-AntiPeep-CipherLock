@@ -116,13 +116,13 @@ class MonitorApp:
         side = ttk.Frame(body, padding=12)
         side.grid(row=0, column=1, sticky="nsew")
 
-        # 0.96" OLED 数字孪生终端组件 (SSD1306 128x64 双色荧光屏比例还原)
+        # 终端显示组件
         oled_hdr = ttk.Frame(side)
         oled_hdr.pack(fill="x")
-        ttk.Label(oled_hdr, text='0.96" OLED 数字孪生终端',
+        ttk.Label(oled_hdr, text='终端显示',
                   font=("Microsoft YaHei UI", 11, "bold")).pack(side="left")
-        ttk.Label(oled_hdr, text="SSD1306 · 128×64", foreground=MUTED,
-                  font=("Consolas", 9)).pack(side="right")
+        ttk.Label(oled_hdr, text="实时监视", foreground=MUTED,
+                  font=("Microsoft YaHei UI", 9)).pack(side="right")
 
         self.oled_canvas = tk.Canvas(
             side, background=OLED_BG, highlightthickness=2,

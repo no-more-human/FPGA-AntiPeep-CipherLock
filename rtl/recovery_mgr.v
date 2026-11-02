@@ -34,6 +34,7 @@ module recovery_mgr #(
     output reg         rec_err,        // 错误一拍(接蜂鸣器)
     output reg         rec_ok,         // 成功一拍(接蜂鸣器/语音)
     output reg         rec_locked,     // 锁死中
+    output reg  [1:0]  rec_ui_mode,    // 0:输入(rE-n), 1:成功(PASS), 2:失败(Err)
     output reg  [7:0]  rec_countdown   // 锁定剩余秒,留给 OLED 显示
 );
 
@@ -52,6 +53,19 @@ reg [3:0]  buf0, buf1, buf2, buf3, buf4, buf5;
 reg [11:0] ms_timer;
 reg [9:0]  sec_cnt;
 reg [14:0] wd_ms;
+
+// sw_recovery 外部异步输入 2 级触发器同步 (消除亚稳态)
+reg sw_recovery_meta;
+reg sw_recovery_sync;
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        sw_recovery_meta <= 1'b0;
+        sw_recovery_sync <= 1'b0;
+    end else begin
+        sw_recovery_meta <= sw_recovery;
+        sw_recovery_sync <= sw_recovery_meta;
+    end
+end
 
 wire [23:0] code_in = {buf0, buf1, buf2, buf3, buf4, buf5};
 
@@ -80,6 +94,7 @@ always @(posedge clk or negedge rst_n) begin
         reset_req     <= 1'b0;
         rec_len       <= 3'd0;
         rec_try       <= 2'd0;
+        rec_ui_mode   <= 2'd0;
         rec_beep_key  <= 1'b0;
         rec_beep_err  <= 1'b0;
         rec_err       <= 1'b0;
@@ -102,14 +117,15 @@ always @(posedge clk or negedge rst_n) begin
         // 等人按 D。开关没拨上去就当没这回事
         // ------------------------------------------------------------
         S_IDLE: begin
-            rec_active <= 1'b0;
-            rec_len    <= 3'd0;
-            rec_locked <= 1'b0;
-            wd_ms      <= 15'd0;
-            if (sw_recovery && key_valid && (key_val == K_D) && (state_code == 4'd0)) begin
+            rec_active  <= 1'b0;
+            rec_len     <= 3'd0;
+            rec_locked  <= 1'b0;
+            rec_ui_mode <= 2'd0;
+            wd_ms       <= 15'd0;
+            if (sw_recovery_sync && key_valid && (key_val == K_D) && (state_code == 4'd0)) begin
                 rec_active   <= 1'b1;
                 rec_beep_key <= 1'b1;
-                rec_try      <= 2'd0;
+                // 注意: 漏洞修复: 不在此清零 rec_try，防止输错后退回待机再进入绕过3次锁定
                 wd_ms        <= OP_TIMEOUT_SEC * 1000;
                 buf0 <= 4'h0; buf1 <= 4'h0; buf2 <= 4'h0;
                 buf3 <= 4'h0; buf4 <= 4'h0; buf5 <= 4'h0;
@@ -121,6 +137,7 @@ always @(posedge clk or negedge rst_n) begin
         // 输恢复码
         // ------------------------------------------------------------
         S_CODE: begin
+            rec_ui_mode <= 2'd0;
             // 30 秒没动静就自己退出,别把人挂在这儿
             if (key_valid) begin
                 wd_ms <= OP_TIMEOUT_SEC * 1000;
@@ -184,29 +201,33 @@ always @(posedge clk or negedge rst_n) begin
         end
 
         // ------------------------------------------------------------
-        // 成功提示,1.5 秒后回待机
+        // 成功提示,1.5 秒后回待机 (数码管显示 PASS)
         // ------------------------------------------------------------
         S_GOOD: begin
-            rec_active <= 1'b1;
+            rec_active  <= 1'b1;
+            rec_ui_mode <= 2'd1;
             if (tick_1k) begin
                 if (ms_timer > 12'd0) ms_timer <= ms_timer - 12'd1;
                 else begin
-                    rec_active <= 1'b0;
-                    st         <= S_IDLE;
+                    rec_active  <= 1'b0;
+                    rec_ui_mode <= 2'd0;
+                    st          <= S_IDLE;
                 end
             end
         end
 
         // ------------------------------------------------------------
-        // 错误提示,1.5 秒后回去接着试
+        // 错误提示,1.5 秒后回去接着试 (数码管显示 Err)
         // ------------------------------------------------------------
         S_BAD: begin
-            rec_active <= 1'b1;
+            rec_active  <= 1'b1;
+            rec_ui_mode <= 2'd2;
             if (tick_1k) begin
                 if (ms_timer > 12'd0) ms_timer <= ms_timer - 12'd1;
                 else begin
-                    wd_ms <= OP_TIMEOUT_SEC * 1000;
-                    st    <= S_CODE;
+                    rec_ui_mode <= 2'd0;
+                    wd_ms       <= OP_TIMEOUT_SEC * 1000;
+                    st          <= S_CODE;
                 end
             end
         end

@@ -147,17 +147,21 @@ module tb_keypad_scan;
         rst_n       = 1'b1;
         repeat (50) @(posedge clk);
 
-        // 测试 Key '5' (Col 1, Row 1 -> 4'h5)
-        simulate_press(2'd1, 2'd1, 4'h5);
+        // 旋转 180° 映射验证:
+        // 原 Key '5' (Col 1, Row 1) -> 现译码为 4'h9
+        simulate_press(2'd1, 2'd1, 4'h9);
 
-        // 测试 Key 'A' (Col 3, Row 0 -> 4'hA)
-        simulate_press(2'd3, 2'd0, 4'hA);
+        // 原 Key 'A' (Col 3, Row 0) -> 现译码为 4'hE ('*')
+        simulate_press(2'd3, 2'd0, 4'hE);
 
-        // 测试 Key '0' (Col 1, Row 3 -> 4'h0)
-        simulate_press(2'd1, 2'd3, 4'h0);
+        // 原 Key '0' (Col 1, Row 3) -> 现译码为 4'h3
+        simulate_press(2'd1, 2'd3, 4'h3);
 
-        // 测试 Key '#' (Col 2, Row 3 -> 4'hF)
-        simulate_press(2'd2, 2'd3, 4'hF);
+        // 原 Key '#' (Col 2, Row 3) -> 现译码为 4'h2
+        simulate_press(2'd2, 2'd3, 4'h2);
+
+        // 原 Key '1' (Col 0, Row 0) -> 现译码为 4'hD ('D')
+        simulate_press(2'd0, 2'd0, 4'hD);
 
         repeat (200) @(posedge clk);
         $display("==================================================");

@@ -5,6 +5,7 @@ EVENTS = {
     "U": "正常开锁", "D": "紧急胁迫报警", "L": "连续试错锁定",
     "A": "门未关严报警", "E": "密码错误", "K": "锁闭",
     "T": "试错锁定解除", "C": "手动紧急报警",
+    "X": "非法撬门报警",
 }
 MAX_FRAME = 1024
 HEX6_RE = re.compile(r"^[0-9A-Fa-f]{6}$")
@@ -37,11 +38,15 @@ class StreamParser:
     def __init__(self):
         self.buffer = None
         self.overflow = False
+        self.expect_challenge = False
 
     def feed(self, data):
         result = []
         for byte in data:
-            if self.buffer is not None:
+            if self.expect_challenge:
+                self.expect_challenge = False
+                result.append({"type": "challenge", "nonce": byte})
+            elif self.buffer is not None:
                 if byte == 10:
                     if not self.overflow:
                         try:
@@ -59,6 +64,8 @@ class StreamParser:
                     self.buffer.append(byte)
                 else:
                     self.overflow = True
+            elif byte == ord("?"):
+                self.expect_challenge = True
             elif byte == ord("@"):
                 self.buffer = bytearray()
             elif chr(byte) in EVENTS:

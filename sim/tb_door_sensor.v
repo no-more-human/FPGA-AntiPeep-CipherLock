@@ -18,6 +18,8 @@ module tb_door_sensor;
     wire       door_open;
     wire       door_alert;
     wire       alert_pulse;
+    wire       tamper_alert;
+    wire       tamper_pulse;
     wire [3:0] open_sec_cnt;
 
     // 采用加速参数 (2秒超时, 5ms消抖)
@@ -33,6 +35,8 @@ module tb_door_sensor;
         .door_open   (door_open),
         .door_alert  (door_alert),
         .alert_pulse (alert_pulse),
+        .tamper_alert(tamper_alert),
+        .tamper_pulse(tamper_pulse),
         .open_sec_cnt(open_sec_cnt)
     );
 
@@ -81,7 +85,7 @@ module tb_door_sensor;
             $display("[FAIL] Glitch falsely passed.");
 
         // 真实门开: 保持稳定高电平
-        $display("[TEST 2] Door opening & 20ms debounce stabilization...");
+        $display("[TEST 2] Door opening & 20ms debounce stabilization (Tamper Alert)...");
         sensor_gpio = 1'b1;
         #(CLK_PERIOD * 150); // 超过 5 个 tick_1k
         if (door_open == 1'b1)
@@ -89,23 +93,35 @@ module tb_door_sensor;
         else
             $display("[FAIL] Door open not detected.");
 
-        // 未开锁时门开不触发超时报警
+        // 未开锁时门开触发防撬报警 (漏洞 1.4 修复验证)
         #(CLK_PERIOD * 500);
-        if (door_alert == 1'b0)
-            $display("[PASS] No alert when door open without unlock.");
+        if (tamper_alert == 1'b1)
+            $display("[PASS] Tamper alert triggered when door opened without unlock (Fix 1.4).");
+        else
+            $display("[FAIL] Tamper alert did not trigger!");
 
-        // 开锁并持续开门 -> 触发超时报警与周期复响
-        $display("[TEST 3] Unlocking and waiting for timeout alert & periodic repeat pulse...");
+        // 关门测试防撬解除
+        sensor_gpio = 1'b0;
+        #(CLK_PERIOD * 150);
+        if (tamper_alert == 1'b0)
+            $display("[PASS] Tamper alert cleared after door closed.");
+        else
+            $display("[FAIL] Tamper alert not cleared after door closed.");
+
+        // 重新开门前合法开锁 -> 不触发防撬，而是进入开门等待
+        $display("[TEST 3] Legal unlock, opening door and waiting for timeout alert...");
         pulse_cnt = 0;
         @(posedge clk);
         unlock_en = 1'b1;
         @(posedge clk);
         unlock_en = 1'b0;
+        sensor_gpio = 1'b1;
+        #(CLK_PERIOD * 150);
 
         // 等待超过 3 个秒边界 (约 3500 个 tick)，验证超时后持续复响
         #(CLK_PERIOD * 40000);
         if (door_alert == 1'b1 && pulse_cnt >= 2)
-            $display("[PASS] Door alert triggered & periodically repeated! door_alert=1, pulse_cnt=%0d", pulse_cnt);
+            $display("[PASS] Door timeout alert triggered & periodically repeated! door_alert=1, pulse_cnt=%0d", pulse_cnt);
         else
             $display("[FAIL] Door alert or repeat pulse abnormal. door_alert=%b, pulse_cnt=%0d, open_sec=%d", door_alert, pulse_cnt, open_sec_cnt);
 

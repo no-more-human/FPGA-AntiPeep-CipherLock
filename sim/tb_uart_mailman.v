@@ -38,6 +38,7 @@ module tb_uart_mailman;
     reg evt_lock     = 1'b0;
     reg evt_duress   = 1'b0;
     reg evt_door     = 1'b0;
+    reg evt_tamper   = 1'b0;
     reg evt_lock_end = 1'b0;
     reg evt_relock   = 1'b0;
     reg evt_pwd_err  = 1'b0;
@@ -57,6 +58,7 @@ module tb_uart_mailman;
     // 输出信号
     wire peep_hang;
     wire remote_unlock;
+    wire auth_err;
     wire cmd_safe;
     wire is_sending;
     wire [7:0] the_letter;
@@ -75,6 +77,7 @@ module tb_uart_mailman;
         .evt_lock      (evt_lock),
         .evt_duress    (evt_duress),
         .evt_door      (evt_door),
+        .evt_tamper    (evt_tamper),
         .evt_lock_end  (evt_lock_end),
         .evt_relock    (evt_relock),
         .evt_pwd_err   (evt_pwd_err),
@@ -90,6 +93,7 @@ module tb_uart_mailman;
         .door_alert    (door_alert),
         .peep_hang     (peep_hang),
         .remote_unlock (remote_unlock),
+        .auth_err      (auth_err),
         .cmd_safe      (cmd_safe),
         .is_sending    (is_sending),
         .the_letter    (the_letter)

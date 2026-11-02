@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+﻿from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -94,3 +94,4 @@ class SafeState:
         self.lockout = False
         self.unlock_until = 0.0
         self.lockout_until = 0.0
+

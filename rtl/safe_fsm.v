@@ -31,17 +31,19 @@ module safe_fsm #(
     input  wire        key_valid,      // 消抖后单周期按键有效脉冲
     input  wire        duress_clear,   // 外部清除反挟持粘滞报警 (预留给 PC 串口或复位)
     input  wire        peep_hang,      // 视觉防窥挂起状态 (挂起下保留反挟持求救能力)
+    input  wire        pwd_reset,      // 恢复码验证成功触发的密码复位脉冲 (恢复出厂 123456)
     
     // 业务状态输出 (供 OLED、数码管、LED 驱动，扩充为 4 位)
     // 0:IDLE, 1:INPUT, 2:SUCCESS, 3:ERROR, 4:LOCKED, 5:SET_NEW, 6:SET_CFM, 7:CHG_AUTH, 8:CHG_NEW, 9:CHG_CFM, 10:OP_DONE
     output reg  [3:0]  state_code,     
     output reg  [4:0]  pwd_len,        // 当前输入的密码长度 (日常开锁 0~16, 录入/改密 0~6)
     output reg  [1:0]  err_count,      // 当前累计输错次数 (0~3)
-    output reg  [6:0]  lock_countdown, // 锁定倒计时剩余秒数 (0~60)
+    output reg  [8:0]  lock_countdown, // 阶梯锁定倒计时剩余秒数 (0~300)
     output reg         unlock_en,      // 开锁使能 (驱动舵机与成功指示)
     output reg         duress_alarm,   // 挟持静默告警使能 (预留给 PC 串口，粘滞锁存)
     output reg         duress_trig,    // 反挟持单拍触发脉冲 (替代粘滞电平导致的二次漏发)
-    output reg         lock_timeout_pulse, // 60s 试错锁定结束单拍脉冲 (通知 PC 解锁 'T')
+    output reg         pwd_err_pulse,  // 真正密码比对失败单周期脉冲 (供 UART 专属上报 'E')
+    output reg         lock_timeout_pulse, // 试错锁定结束单拍脉冲 (通知 PC 解锁 'T')
     output reg         pwd_changed,    // 密码成功更新单周期脉冲 (供语音播报 Track 5)
     
     // 音效触发脉冲输出 (单周期高电平，连接 buzzer_driver)
@@ -69,8 +71,13 @@ localparam S_OP_DONE  = 4'd11; // 录入/改密成功提示保持 (1.5秒)
 
 reg [3:0]  state;
 
-// 动态密码寄存器 (上电/复位时赋初始值 DEFAULT_PWD)
-reg [23:0] current_pwd;
+// 动态密码寄存器 (仅上电 POR 初始化与恢复码重置，不受按键 RST 影响)
+reg [23:0] current_pwd = DEFAULT_PWD;
+initial current_pwd = DEFAULT_PWD;
+
+// 阶梯锁定档位: 0: 60s, 1: 120s, 2: 300s (开锁成功复位为 0)
+reg [1:0]  lock_tier = 2'd0;
+initial lock_tier = 2'd0;
 
 // 6 位输入数字暂存缓冲区 (每个 4-bit)
 reg [3:0]  input_digits [0:5];
@@ -162,28 +169,43 @@ integer i;
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        state              <= S_IDLE;
-        current_pwd        <= DEFAULT_PWD;
-        pwd_len            <= 5'd0;
-        lock_vlen          <= 5'd0;
-        vbuf               <= 64'd0;
-        err_count          <= 2'd0;
-        lock_countdown     <= 7'd0;
-        unlock_en          <= 1'b0;
-        duress_alarm       <= 1'b0;
-        duress_trig        <= 1'b0;
-        lock_timeout_pulse <= 1'b0;
-        pwd_changed        <= 1'b0;
-        beep_key           <= 1'b0;
-        beep_err           <= 1'b0;
-        beep_lock          <= 1'b0;
-        beep_succ          <= 1'b0;
-        ms_timer           <= 12'd0;
-        sec_tick_cnt       <= 10'd0;
-        op_timeout_ms      <= 14'd0;
-        for (i = 0; i < 6; i = i + 1) begin
-            input_digits[i]   <= 4'h0;
-            new_pwd_digits[i] <= 4'h0;
+        // 漏洞 1.1 修复:
+        // 按键复位 (rst_n) 绝不冲刷 current_pwd、err_count、lock_tier 和 lock_countdown！
+        // 若当前正处于锁定状态 (S_LOCKED)，保持锁定并继续倒计时，严防按复位键脱逃锁定！
+        if (state == S_LOCKED) begin
+            pwd_len            <= 5'd0;
+            lock_vlen          <= 5'd0;
+            vbuf               <= 64'd0;
+            unlock_en          <= 1'b0;
+            beep_key           <= 1'b0;
+            beep_err           <= 1'b0;
+            beep_lock          <= 1'b0;
+            beep_succ          <= 1'b0;
+            pwd_changed        <= 1'b0;
+            duress_trig        <= 1'b0;
+            pwd_err_pulse      <= 1'b0;
+            lock_timeout_pulse <= 1'b0;
+        end else begin
+            state              <= S_IDLE;
+            pwd_len            <= 5'd0;
+            lock_vlen          <= 5'd0;
+            vbuf               <= 64'd0;
+            unlock_en          <= 1'b0;
+            duress_alarm       <= 1'b0;
+            duress_trig        <= 1'b0;
+            pwd_err_pulse      <= 1'b0;
+            lock_timeout_pulse <= 1'b0;
+            pwd_changed        <= 1'b0;
+            beep_key           <= 1'b0;
+            beep_err           <= 1'b0;
+            beep_lock          <= 1'b0;
+            beep_succ          <= 1'b0;
+            ms_timer           <= 12'd0;
+            op_timeout_ms      <= 14'd0;
+            for (i = 0; i < 6; i = i + 1) begin
+                input_digits[i]   <= 4'h0;
+                new_pwd_digits[i] <= 4'h0;
+            end
         end
     end else begin
         // 默认清除单周期脉冲
@@ -193,15 +215,24 @@ always @(posedge clk or negedge rst_n) begin
         beep_succ          <= 1'b0;
         pwd_changed        <= 1'b0;
         duress_trig        <= 1'b0;
+        pwd_err_pulse      <= 1'b0;
         lock_timeout_pulse <= 1'b0;
+
+        // 恢复码验证成功时才将密码重置回出厂默认值，并清空错误累计与锁定阶梯
+        if (pwd_reset) begin
+            current_pwd <= DEFAULT_PWD;
+            err_count   <= 2'd0;
+            lock_tier   <= 2'd0;
+        end
 
         // 外部清除粘滞反挟持告警
         if (duress_clear) begin
             duress_alarm <= 1'b0;
         end
 
-        // 录入与改密流程的 15 秒无操作看门狗计时
-        if (state == S_SET_NEW || state == S_SET_CFM ||
+        // 瑕疵 2.1 修复:
+        // S_INPUT, 录入与改密流程的 15 秒无操作看门狗计时
+        if (state == S_INPUT || state == S_SET_NEW || state == S_SET_CFM ||
             state == S_CHG_AUTH || state == S_CHG_NEW || state == S_CHG_CFM) begin
             if (key_valid) begin
                 op_timeout_ms <= 14'd15000; // 只要有任何按键按下，重置 15s 看门狗
@@ -209,8 +240,9 @@ always @(posedge clk or negedge rst_n) begin
                 if (op_timeout_ms > 14'd0) begin
                     op_timeout_ms <= op_timeout_ms - 14'd1;
                 end else begin
-                    // 15 秒超时无操作，强制放弃改密/录入流程，安全退回待机
-                    pwd_len  <= 3'd0;
+                    // 15 秒超时无操作，清空输入暂存，发出提示音，安全退回待机
+                    pwd_len  <= 5'd0;
+                    vbuf     <= 64'd0;
                     beep_err <= 1'b1;
                     state    <= S_IDLE;
                 end
@@ -233,15 +265,19 @@ always @(posedge clk or negedge rst_n) begin
                         vbuf            <= {60'd0, key_val};
                         pwd_len         <= 5'd1;
                         beep_key        <= 1'b1;
+                        op_timeout_ms   <= 14'd15000;
                         state           <= S_INPUT;
                     end else if (key_val == 4'hA && !peep_hang) begin
                         // 'A' 键: 新用户开荒录入通道 (直接输 6 位新密码)，防窥挂起时屏蔽
                         // 安全门控: 仅当密码仍为出厂默认值时可用；改过密码后只能走 B 键验旧改密
-                        beep_key      <= 1'b1;
                         if (pwd_is_default) begin
+                            beep_key      <= 1'b1;
                             pwd_len       <= 5'd0;
                             op_timeout_ms <= 14'd15000;
                             state         <= S_SET_NEW;
+                        end else begin
+                            // 瑕疵 2.7 修复: 待机态在密码已修改过时按 A 键，发出明确的错误警告音反馈
+                            beep_err      <= 1'b1;
                         end
                     end else if (key_val == 4'hB && !peep_hang) begin
                         // 'B' 键: 老用户安全改密通道 (需先验旧密码)，防窥挂起时屏蔽
@@ -304,6 +340,7 @@ always @(posedge clk or negedge rst_n) begin
                 if (match_duress) begin
                     // 反挟持密码匹配成功！(无条件放行: 表面开门，底层静默粘滞告警 + 单拍脉冲)
                     err_count    <= 2'd0;
+                    lock_tier    <= 2'd0; // 开锁成功，重置阶梯锁定档位
                     unlock_en    <= 1'b1;
                     duress_alarm <= 1'b1;
                     duress_trig  <= 1'b1;
@@ -313,6 +350,7 @@ always @(posedge clk or negedge rst_n) begin
                 end else if (match_norm && !peep_hang) begin
                     // 动态密码匹配成功！(仅在无防窥挂起时允许正常开锁)
                     err_count <= 2'd0;
+                    lock_tier <= 2'd0; // 开锁成功，重置阶梯锁定档位
                     unlock_en <= 1'b1;
                     beep_succ <= 1'b1;
                     ms_timer  <= 12'd3000; // 成功开锁保持 3 秒
@@ -323,14 +361,29 @@ always @(posedge clk or negedge rst_n) begin
                     ms_timer  <= 12'd1500;
                     state     <= S_ERROR;
                 end else begin
-                    // 密码不匹配
+                    // 瑕疵 2.3 修复: 仅在真正的密码比对失败时发出 pwd_err_pulse 单周期脉冲给 PC
+                    pwd_err_pulse <= 1'b1;
                     if (err_count >= 2'd2) begin
-                        // 连续累计满 3 次输错 -> 触发 60s 系统锁定！
-                        err_count      <= 2'd3;
-                        lock_countdown <= LOCK_TIMEOUT_SEC;
-                        sec_tick_cnt   <= 10'd0;
-                        beep_lock      <= 1'b1;
-                        state          <= S_LOCKED;
+                        // 连续累计满 3 次输错 -> 触发阶梯锁定！
+                        // 漏洞 1.5 修复: 阶梯递增锁定时长 (第1次 60s, 第2次 120s, 第3次及以后 300s)
+                        err_count    <= 2'd3;
+                        sec_tick_cnt <= 10'd0;
+                        beep_lock    <= 1'b1;
+                        case (lock_tier)
+                            2'd0: begin
+                                lock_countdown <= 9'd60;
+                                lock_tier      <= 2'd1;
+                            end
+                            2'd1: begin
+                                lock_countdown <= 9'd120;
+                                lock_tier      <= 2'd2;
+                            end
+                            default: begin
+                                lock_countdown <= 9'd300;
+                                lock_tier      <= 2'd2;
+                            end
+                        endcase
+                        state <= S_LOCKED;
                     end else begin
                         // 输错 1 次或 2 次
                         err_count <= err_count + 2'd1;
@@ -399,8 +452,9 @@ always @(posedge clk or negedge rst_n) begin
                         lock_vlen <= 5'd0;
                         if (lock_vlen >= 5'd6 && match_duress) begin
                             // 锁定期间输入反挟持密码求救: 立即解除锁定、开门并触发静默报警！
-                            lock_countdown <= 7'd0;
+                            lock_countdown <= 9'd0;
                             err_count      <= 2'd0;
+                            lock_tier      <= 2'd0;
                             unlock_en      <= 1'b1;
                             duress_alarm   <= 1'b1;
                             duress_trig    <= 1'b1;
@@ -412,11 +466,11 @@ always @(posedge clk or negedge rst_n) begin
                 end else if (tick_1k) begin
                     if (sec_tick_cnt >= 10'd999) begin
                         sec_tick_cnt <= 10'd0;
-                        if (lock_countdown > 7'd1) begin
-                            lock_countdown <= lock_countdown - 7'd1;
+                        if (lock_countdown > 9'd1) begin
+                            lock_countdown <= lock_countdown - 9'd1;
                         end else begin
-                            // 60 秒倒计时结束，恢复系统并发送超时解锁脉冲 'T'
-                            lock_countdown     <= 7'd0;
+                            // 锁定倒计时结束，恢复系统并发送超时解锁脉冲 'T'
+                            lock_countdown     <= 9'd0;
                             err_count          <= 2'd0;
                             vbuf               <= 64'd0;
                             lock_vlen          <= 5'd0;
@@ -538,19 +592,33 @@ always @(posedge clk or negedge rst_n) begin
                                 op_timeout_ms <= 14'd15000;
                                 state         <= S_CHG_NEW;
                             end else begin
-                                // 旧密码错误，扣罚错误次数 (达到 3 次同样锁机)
+                                // 旧密码错误，扣罚错误次数 (达到 3 次同样进入阶梯锁定)
+                                pwd_err_pulse <= 1'b1;
                                 if (err_count >= 2'd2) begin
-                                    err_count      <= 2'd3;
-                                    lock_countdown <= LOCK_TIMEOUT_SEC;
-                                    sec_tick_cnt   <= 10'd0;
-                                    beep_lock      <= 1'b1;
-                                    pwd_len        <= 3'd0;
-                                    state          <= S_LOCKED;
+                                    err_count    <= 2'd3;
+                                    sec_tick_cnt <= 10'd0;
+                                    beep_lock    <= 1'b1;
+                                    pwd_len      <= 5'd0;
+                                    case (lock_tier)
+                                        2'd0: begin
+                                            lock_countdown <= 9'd60;
+                                            lock_tier      <= 2'd1;
+                                        end
+                                        2'd1: begin
+                                            lock_countdown <= 9'd120;
+                                            lock_tier      <= 2'd2;
+                                        end
+                                        default: begin
+                                            lock_countdown <= 9'd300;
+                                            lock_tier      <= 2'd2;
+                                        end
+                                    endcase
+                                    state <= S_LOCKED;
                                 end else begin
                                     err_count <= err_count + 2'd1;
                                     beep_err  <= 1'b1;
                                     ms_timer  <= 12'd1500;
-                                    pwd_len   <= 3'd0;
+                                    pwd_len   <= 5'd0;
                                     state     <= S_ERROR;
                                 end
                             end

@@ -1,4 +1,4 @@
-import time
+﻿import time
 import uuid
 from collections import deque
 
@@ -269,6 +269,11 @@ class Controller:
             if self.peeping:
                 self.recorder.trigger(event_id, "P")
             self.send("P" if self.peeping else "S")
+        elif kind == "challenge":
+            nonce = int(msg.get("nonce", 0))
+            self.log("AUTH", f"收到下位机认证挑战 Nonce: 0x{nonce:02X}，正在回传验算应答")
+            if self.link:
+                self.link.respond_challenge(nonce)
         elif kind == "event" and msg.get("code") in EVENTS:
             code = msg["code"]
             now = time.monotonic()
@@ -319,3 +324,4 @@ class Controller:
 
     def close(self):
         self.disconnect()
+

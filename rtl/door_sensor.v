@@ -30,6 +30,8 @@ module door_sensor #(
     output reg         door_open,      // 消抖后的门当前物理状态 (0:已关严, 1:敞开)
     output reg         door_alert,     // 超时 15 秒未关门警报信号 (高电平有效)
     output reg         alert_pulse,    // 刚触发超时报警的单周期脉冲 (供语音/蜂鸣器触发)
+    output reg         tamper_alert,   // 锁闭状态下非法撬门警报信号 (高电平有效)
+    output reg         tamper_pulse,   // 非法撬门单周期触发脉冲 (供 UART 上报 'X')
     output reg  [3:0]  open_sec_cnt    // 门已敞开秒数统计 (0~15秒, 供数码管/OLED显示)
 );
 
@@ -75,11 +77,12 @@ always @(posedge clk or negedge rst_n) begin
 end
 
 // --------------------------------------------------------------------------
-// 3. 开锁后 15 秒超时未关门计时与报警逻辑 (3段状态机: 解决开锁延迟拉门失效隐患)
+// 3. 开锁后 15 秒超时未关门计时与防撬报警逻辑 (4段状态机)
 // --------------------------------------------------------------------------
-localparam ST_DOOR_IDLE   = 2'd0; // 待机门闭，未布防
+localparam ST_DOOR_IDLE   = 2'd0; // 待机门闭，布防中
 localparam ST_DOOR_WAIT   = 2'd1; // 已开锁，等待拉开门 (带 30s 未拉门超时撤防)
 localparam ST_DOOR_OPENED = 2'd2; // 门已拉开，15s 未关门超时监控中
+localparam ST_DOOR_TAMPER = 2'd3; // 锁闭状态下非法撬门报警中
 
 reg [1:0]  door_state;
 reg [9:0]  ms_cnt;       // 0~999 毫秒计数器
@@ -89,26 +92,36 @@ always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
         door_alert   <= 1'b0;
         alert_pulse  <= 1'b0;
+        tamper_alert <= 1'b0;
+        tamper_pulse <= 1'b0;
         open_sec_cnt <= 4'd0;
         ms_cnt       <= 10'd0;
         wait_sec_cnt <= 5'd0;
         door_state   <= ST_DOOR_IDLE;
     end else begin
-        alert_pulse <= 1'b0; // 默认清除单周期脉冲
+        alert_pulse  <= 1'b0; // 默认清除单周期脉冲
+        tamper_pulse <= 1'b0;
 
         case (door_state)
             ST_DOOR_IDLE: begin
                 door_alert   <= 1'b0;
+                tamper_alert <= 1'b0;
                 open_sec_cnt <= 4'd0;
                 ms_cnt       <= 10'd0;
                 wait_sec_cnt <= 5'd0;
                 if (unlock_en) begin
-                    // 开锁触发布防
+                    // 合法开锁触发布防监控
                     if (door_open) begin
                         door_state <= ST_DOOR_OPENED;
                     end else begin
                         door_state <= ST_DOOR_WAIT;
                     end
+                end else if (door_open) begin
+                    // 处于闭锁布防状态下，未开锁却门被拉开 -> 非法撬门报警！
+                    tamper_alert <= 1'b1;
+                    tamper_pulse <= 1'b1;
+                    alert_pulse  <= 1'b1;
+                    door_state   <= ST_DOOR_TAMPER;
                 end
             end
 
@@ -162,6 +175,23 @@ always @(posedge clk or negedge rst_n) begin
                             door_alert  <= 1'b1;
                             alert_pulse <= 1'b1;
                         end
+                    end else begin
+                        ms_cnt <= ms_cnt + 10'd1;
+                    end
+                end
+            end
+
+            ST_DOOR_TAMPER: begin
+                // 非法撬门状态：持续报警
+                if (!door_open || unlock_en) begin
+                    // 门被重新关严，或者合法开锁，解除撬门报警
+                    tamper_alert <= 1'b0;
+                    ms_cnt       <= 10'd0;
+                    door_state   <= ST_DOOR_IDLE;
+                end else if (tick_1k) begin
+                    if (ms_cnt >= 10'd999) begin
+                        ms_cnt      <= 10'd0;
+                        alert_pulse <= 1'b1; // 每秒产生告警脉冲
                     end else begin
                         ms_cnt <= ms_cnt + 10'd1;
                     end

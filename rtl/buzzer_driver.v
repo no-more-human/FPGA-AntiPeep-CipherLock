@@ -22,6 +22,7 @@ module buzzer_driver #(
     input  wire       beep_err,   // 密码错误警告音触发 (2.5kHz 鸣响 300ms)
     input  wire       beep_lock,  // 严重锁定报警音触发 (4kHz 快速脉冲报警 1.2s)
     input  wire       beep_succ,  // 开锁成功和弦音触发 (Do-Mi-Sol 依次鸣响 240ms)
+    input  wire       beep_alarm, // 持续警报使能 (门未关/防撬急促间歇蜂鸣，高电平持续报警)
     
     output reg        buzzer_out  // 驱动板载蜂鸣器输出 (引脚: H11)
 );
@@ -41,15 +42,17 @@ localparam HALF_CNT_SOL   = 32'd15_943; // G6: 1568 Hz
 // --------------------------------------------------------------------------
 // 2. 音效工作状态定义
 // --------------------------------------------------------------------------
-localparam S_IDLE = 3'd0;
-localparam S_KEY  = 3'd1;
-localparam S_ERR  = 3'd2;
-localparam S_LOCK = 3'd3;
-localparam S_SUCC = 3'd4;
+localparam S_IDLE  = 3'd0;
+localparam S_KEY   = 3'd1;
+localparam S_ERR   = 3'd2;
+localparam S_LOCK  = 3'd3;
+localparam S_SUCC  = 3'd4;
+localparam S_ALARM = 3'd5;
 
 reg [2:0]  state;
 reg [11:0] duration_cnt; // 毫秒持续时间计数器 (基于 tick_1k)
 reg [7:0]  lock_phase;   // 0~199 循环相位计数器 (替代 % 200，完全消除 DSP 占用 P0-D)
+reg [8:0]  alarm_phase;  // 0~299 循环相位计数器 (门未关/防撬 150ms鸣/150ms停)
 reg [31:0] target_half_cnt;
 reg        tone_en;      // 当前是否输出方波使能
 
@@ -61,6 +64,7 @@ always @(posedge clk or negedge rst_n) begin
         state           <= S_IDLE;
         duration_cnt    <= 12'd0;
         lock_phase      <= 8'd0;
+        alarm_phase     <= 9'd0;
         target_half_cnt <= 32'd0;
         tone_en         <= 1'b0;
     end else begin
@@ -81,13 +85,32 @@ always @(posedge clk or negedge rst_n) begin
             duration_cnt    <= 12'd300;  // 持续 300ms 错误警示音
             target_half_cnt <= HALF_CNT_2K5HZ;
             tone_en         <= 1'b1;
-        end else if (beep_key && (state == S_IDLE)) begin
+        end else if (beep_key && (state == S_IDLE || state == S_ALARM)) begin
             state           <= S_KEY;
             duration_cnt    <= 12'd50;   // 持续 50ms 清脆按键音
             target_half_cnt <= HALF_CNT_1KHZ;
             tone_en         <= 1'b1;
+        end else if (beep_alarm && (state == S_IDLE)) begin
+            state           <= S_ALARM;
+            alarm_phase     <= 9'd0;
+            target_half_cnt <= HALF_CNT_4KHZ;
+            tone_en         <= 1'b1;
         end else if (tick_1k) begin
-            if (duration_cnt > 12'd0) begin
+            if (state == S_ALARM) begin
+                if (!beep_alarm) begin
+                    state   <= S_IDLE;
+                    tone_en <= 1'b0;
+                end else begin
+                    // 持续急促报警: 150ms 鸣响, 150ms 静音 (300ms 周期)
+                    target_half_cnt <= HALF_CNT_4KHZ;
+                    tone_en         <= (alarm_phase < 9'd150);
+                    if (alarm_phase >= 9'd299) begin
+                        alarm_phase <= 9'd0;
+                    end else begin
+                        alarm_phase <= alarm_phase + 9'd1;
+                    end
+                end
+            end else if (duration_cnt > 12'd0) begin
                 duration_cnt <= duration_cnt - 12'd1;
                 
                 // 状态细化控制
@@ -130,9 +153,14 @@ always @(posedge clk or negedge rst_n) begin
                     end
                 endcase
             end else begin
-                state      <= S_IDLE;
-                lock_phase <= 8'd0;
-                tone_en    <= 1'b0;
+                if (beep_alarm) begin
+                    state       <= S_ALARM;
+                    alarm_phase <= 9'd0;
+                end else begin
+                    state      <= S_IDLE;
+                    lock_phase <= 8'd0;
+                    tone_en    <= 1'b0;
+                end
             end
         end
     end
