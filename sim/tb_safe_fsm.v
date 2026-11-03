@@ -32,6 +32,7 @@ module tb_safe_fsm;
     reg        duress_clear;
     reg        peep_hang;
     reg        pwd_reset;
+    reg        remote_auth_err;
 
     wire [3:0] state_code;
     wire [4:0] pwd_len;
@@ -62,6 +63,7 @@ module tb_safe_fsm;
         .duress_clear      (duress_clear),
         .peep_hang         (peep_hang),
         .pwd_reset         (pwd_reset),
+        .remote_auth_err   (remote_auth_err),
         .state_code        (state_code),
         .pwd_len           (pwd_len),
         .err_count         (err_count),
@@ -118,9 +120,10 @@ module tb_safe_fsm;
         rst_n        = 1'b0;
         key_val      = 4'h0;
         key_valid    = 1'b0;
-        duress_clear = 1'b0;
-        peep_hang    = 1'b0;
-        pwd_reset    = 1'b0;
+        duress_clear    = 1'b0;
+        peep_hang       = 1'b0;
+        pwd_reset       = 1'b0;
+        remote_auth_err = 1'b0;
         #(CLK_PERIOD * 20);
         rst_n        = 1'b1;
         #(CLK_PERIOD * 20);
@@ -493,6 +496,58 @@ module tb_safe_fsm;
         else
             $display("[FAIL] Factory password failed after pwd_reset, state=%d", state_code);
         press_key(4'hC);
+
+        // ==============================================================
+        // 改造 A1 验证: 远程挑战-应答认证失败脉冲与键盘输错同路径罚分
+        // ==============================================================
+        $display("[TEST 24] Testing remote_auth_err pulses triggering tiered lockout (A1)...");
+        // 前置: 此时应为 IDLE 且 err_count=0 (pwd_reset 已清零)
+        #(CLK_PERIOD * 100);
+
+        // 第 1 次远程认证失败 (单周期脉冲, 与 uart_mailman auth_err 对齐)
+        @(posedge clk); remote_auth_err = 1'b1;
+        @(posedge clk); remote_auth_err = 1'b0;
+        #(CLK_PERIOD * 20);
+        if (err_count == 2'd1 && state_code == 4'd3)
+            $display("[PASS] Remote auth error 1/3: err_count=1, state=S_ERROR");
+        else
+            $display("[FAIL] Remote auth error 1/3 failed: err_count=%d, state=%d", err_count, state_code);
+
+        // 等待 S_ERROR 1.5s 提示结束回到 IDLE
+        #(CLK_PERIOD * 10000);
+
+        // 第 2 次远程认证失败
+        @(posedge clk); remote_auth_err = 1'b1;
+        @(posedge clk); remote_auth_err = 1'b0;
+        #(CLK_PERIOD * 20);
+        if (err_count == 2'd2 && state_code == 4'd3)
+            $display("[PASS] Remote auth error 2/3: err_count=2, state=S_ERROR");
+        else
+            $display("[FAIL] Remote auth error 2/3 failed: err_count=%d, state=%d", err_count, state_code);
+
+        // 等待回到 IDLE
+        #(CLK_PERIOD * 10000);
+
+        // 第 3 次远程认证失败 -> 触发 S_LOCKED, 倒计时装载 LOCK_TIMEOUT_SEC(=3)
+        @(posedge clk); remote_auth_err = 1'b1;
+        @(posedge clk); remote_auth_err = 1'b0;
+        #(CLK_PERIOD * 20);
+        if (err_count == 2'd3 && state_code == 4'd4 && lock_countdown == 9'd3)
+            $display("[PASS] Remote auth error 3/3: entered S_LOCKED with countdown=3s!");
+        else
+            $display("[FAIL] Remote auth error 3/3 failed: state=%d, err=%d, countdown=%d", state_code, err_count, lock_countdown);
+
+        // 等待倒计时递减 1 秒 (countdown 3 -> 2)
+        #(CLK_PERIOD * 7000);
+
+        // 锁定态下再次注入远程失败脉冲, 倒计时不应被重置
+        @(posedge clk); remote_auth_err = 1'b1;
+        @(posedge clk); remote_auth_err = 1'b0;
+        #(CLK_PERIOD * 20);
+        if (state_code == 4'd4 && lock_countdown < 9'd3)
+            $display("[PASS] Locked state immune to further remote failure reset!");
+        else
+            $display("[FAIL] Locked state disturbed by remote failure: state=%d, countdown=%d", state_code, lock_countdown);
 
         if (lock_to_cnt >= 1)
             $display("[PASS] lock_timeout_pulse verified (count=%0d).", lock_to_cnt);

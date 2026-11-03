@@ -1,4 +1,4 @@
-﻿from dataclasses import dataclass
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -66,7 +66,7 @@ class SafeState:
             self.lockout = True
             self.unlock_until = 0.0
             self.lockout_until = now + self.lockout_sec
-            self.lock = "试错锁定（60s 倒计时中）"
+            self.lock = "试错锁定（倒计时中）"
         elif code == "K":
             self.unlock_until = 0.0
             self.lock = "已锁闭（下位机回报）"
@@ -77,6 +77,9 @@ class SafeState:
         elif code == "A":
             self.unlock_until = 0.0
             self.lock = "门未关严（下位机回报）"
+        elif code == "X":
+            self.unlock_until = 0.0
+            self.lock = "非法撬门报警（下位机回报）"
 
     def tick(self, now=None):
         import time
@@ -84,7 +87,7 @@ class SafeState:
         if self.lockout and self.lockout_until and now >= self.lockout_until:
             self.lockout = False
             self.lockout_until = 0.0
-            self.lock = "已锁闭（60s 试错锁定自动解除）"
+            self.lock = "已锁闭（试错锁定自动解除）"
         if self.unlock_until and now >= self.unlock_until:
             self.unlock_until = 0.0
             self.lock = "已锁闭（3秒自动回弹）"
@@ -94,4 +97,3 @@ class SafeState:
         self.lockout = False
         self.unlock_until = 0.0
         self.lockout_until = 0.0
-

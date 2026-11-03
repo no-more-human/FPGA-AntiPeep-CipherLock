@@ -35,7 +35,10 @@ module top(
     input  wire       uart_rx,     // 收 PC 的话 (F12)
 
     // 拨码开关 SW7, 拨上去才允许走恢复码通道 (A14, 内部下拉)
-    input  wire       sw_recovery
+    input  wire       sw_recovery,
+
+    // 外部机械锁舌舵机驱动接口 (标准 50Hz PWM，引脚: J14，驱动 SG90 实物锁舌)
+    output wire       servo_pwm
 );
 
 // --------------------------------------------------------------------------
@@ -92,6 +95,7 @@ keypad_scan #(
 wire peep_hang;        // 1 就是有人在偷看
 wire remote_unlock;    // PC 让远程开的
 wire cmd_safe;         // 收到 'S' 那一拍
+wire auth_err;         // 远程挑战-应答认证失败或超时脉冲
 
 // 恢复码通道
 wire       rec_active;
@@ -141,6 +145,7 @@ safe_fsm #(
     .duress_clear      (cmd_safe),        // 收到 'S' 清反挟持粘滞报警
     .peep_hang         (peep_hang),       // 防窥挂起输入，内部保留反挟持求救
     .pwd_reset         (reset_req),       // 恢复码验证成功触发重置出厂密码
+    .remote_auth_err   (auth_err),        // P1: 远程挑战认证失败计入错误次数并触发阶梯锁定
     .state_code        (state_code),
     .pwd_len           (pwd_len),
     .err_count         (err_count),
@@ -203,7 +208,6 @@ wire door_alert_comb = door_alert | tamper_alert;
 // --------------------------------------------------------------------------
 // 5. 板载无源蜂鸣器 PWM 驱动 (按键音、错误警告音、锁定严重警报、成功和弦，0 DSP)
 // --------------------------------------------------------------------------
-wire auth_err;
 wire beep_key_comb = beep_key | rec_beep_key;
 wire beep_err_comb = beep_err | rec_beep_err | rec_err | auth_err;
 
@@ -329,7 +333,7 @@ uart_mailman #(
     .state_code    (state_code),
     .pwd_len       (pwd_len),
     .err_count     (err_count),
-    .lock_countdown(lock_countdown[6:0]),
+    .lock_countdown(lock_countdown),
     .rec_active    (rec_active),
     .rec_len       (rec_len),
     .rec_locked    (rec_locked),
@@ -347,13 +351,13 @@ uart_mailman #(
 // 10. 恢复码通道 (忘了密码时用)
 //     待机按 D -> 输 6 位恢复码 -> 对了密码打回 123456
 //     sw_recovery(A14) 不拨上去, D 键完全无效
-//     默认恢复码 937158
+//     默认恢复码 937158 (对应 PRESENT 密文哈希摘要 24'hC905ED, 全芯片无明文驻留)
 // --------------------------------------------------------------------------
 recovery_mgr #(
-    .RECOVERY_CODE ({4'h9, 4'h3, 4'h7, 4'h1, 4'h5, 4'h8}),
-    .MAX_TRY       (3),
-    .LOCK_SEC      (60),
-    .OP_TIMEOUT_SEC(30)
+    .RECOVERY_CODE_HASH (24'hC905ED),
+    .MAX_TRY            (3),
+    .LOCK_SEC           (60),
+    .OP_TIMEOUT_SEC     (30)
 ) u_recovery_mgr (
     .clk          (clk_50M),
     .rst_n        (rst_sync_n),
@@ -374,6 +378,39 @@ recovery_mgr #(
     .rec_locked   (rec_locked),
     .rec_countdown(rec_countdown)
 );
+
+// --------------------------------------------------------------------------
+// 11. P1: 外部实物机械锁舌舵机 (SG90) 50Hz PWM 发生器 (软硬件双模设计)
+//     板载 LED2 (B16) 100% 保持点亮 3 秒 (零接线高可靠保底)
+//     同时 servo_pwm 输出标准舵机脉冲 (驱动亚克力实物箱舵机旋转开门)
+//     周期: 20ms (1,000,000 个 50MHz 时钟周期)
+//     闭锁脉宽: 1.0ms (50,000 周期, 舵机 0 度, 锁舌伸出锁门)
+//     开锁脉宽: 2.0ms (100,000 周期, 舵机 90度, 锁舌缩回开锁)
+// --------------------------------------------------------------------------
+reg [19:0] servo_cnt;
+reg        servo_pwm_r;
+
+always @(posedge clk_50M or negedge rst_sync_n) begin
+    if (!rst_sync_n) begin
+        servo_cnt   <= 20'd0;
+        servo_pwm_r <= 1'b0;
+    end else begin
+        if (servo_cnt >= 20'd999_999) begin
+            servo_cnt <= 20'd0;
+        end else begin
+            servo_cnt <= servo_cnt + 20'd1;
+        end
+
+        // 脉冲产生: 开锁 2.0ms, 闭锁 1.0ms
+        if (unlock_all) begin
+            servo_pwm_r <= (servo_cnt < 20'd100_000);
+        end else begin
+            servo_pwm_r <= (servo_cnt < 20'd50_000);
+        end
+    end
+end
+
+assign servo_pwm = servo_pwm_r;
 
 endmodule
 

@@ -48,7 +48,7 @@ module tb_uart_mailman;
     reg [3:0] state_code     = 4'd0;
     reg [4:0] pwd_len        = 5'd0;
     reg [1:0] err_count      = 2'd0;
-    reg [6:0] lock_countdown = 7'd0;
+    reg [8:0] lock_countdown = 9'd0;
     reg       rec_active     = 1'b0;
     reg [2:0] rec_len        = 3'd0;
     reg       rec_locked     = 1'b0;
@@ -179,15 +179,40 @@ module tb_uart_mailman;
         // 等待挂起的 @O 帧发送完毕
         repeat (45000) @(posedge clk);
 
-        // 2. 测试远程开锁 'R' 保持时间
-        $display("\n[Case 2] 测试远程开锁 'R' 保持 3 秒 (3000 ticks) 逻辑...");
-        send_rx_byte(8'h52); // 'R'
-        repeat (10) @(posedge clk);
-        if (remote_unlock === 1'b1) begin
-            $display("  [PASS] 收到 'R' 触发 remote_unlock = 1");
+        // 2. 测试远程开锁 'R' 挑战-应答认证与保持 3 秒 (3000 ticks) 逻辑
+        $display("\n[Case 2] 测试远程开锁 'R' PRESENT-MAC 挑战-应答握手与保持 3 秒逻辑...");
+        rx_cap_cnt = 0;
+        cap_en     = 1'b1;
+        send_rx_byte(8'h52); // 'R' 请求挑战
+        repeat (15) @(posedge clk);
+        if (remote_unlock === 1'b0) begin
+            $display("  [PASS] 仅发 'R' 未应答前 remote_unlock 保持 0 (防重放/未授权拦截)");
             pass_count = pass_count + 1;
         end else begin
-            $display("  [FAIL] 收到 'R' 未拉高 remote_unlock");
+            $display("  [FAIL] 未完成挑战应答就错误拉高了 remote_unlock");
+            fail_count = fail_count + 1;
+        end
+
+        // 等待 FPGA 发送 '?' + Nonce (2 字节)
+        repeat (12000) @(posedge clk);
+        cap_en = 1'b0;
+        if (rx_cap_cnt >= 2 && rx_cap_buf[0] == 8'h3F) begin
+            $display("  [PASS] 成功捕获挑战帧 '?' (0x3F) + Nonce (0x%02X)", rx_cap_buf[1]);
+            pass_count = pass_count + 1;
+        end else begin
+            $display("  [FAIL] 未捕获有效挑战帧, rx_cap_cnt=%0d", rx_cap_cnt);
+            fail_count = fail_count + 1;
+        end
+
+        // 回传 '!' (0x21) + PRESENT-MAC 应答字节
+        send_rx_byte(8'h21); // '!'
+        send_rx_byte(dut.calc_auth_mac(rx_cap_buf[1]));
+        repeat (10) @(posedge clk);
+        if (remote_unlock === 1'b1) begin
+            $display("  [PASS] 挑战-应答核验通过，成功触发 remote_unlock = 1");
+            pass_count = pass_count + 1;
+        end else begin
+            $display("  [FAIL] 挑战-应答核验后未拉高 remote_unlock");
             fail_count = fail_count + 1;
         end
 
@@ -292,7 +317,7 @@ module tb_uart_mailman;
         state_code     <= 4'd1;
         pwd_len        <= 5'd5;
         err_count      <= 2'd1;
-        lock_countdown <= 7'd45;
+        lock_countdown <= 9'd45;
         repeat (45000) @(posedge clk);
         cap_en = 1'b0;
 
@@ -310,6 +335,60 @@ module tb_uart_mailman;
             pass_count = pass_count + 1;
         end else begin
             $display("  [FAIL] @O 快照帧不匹配，rx_cap_cnt=%0d, 首字节=%h", rx_cap_cnt, rx_cap_buf[0]);
+            fail_count = fail_count + 1;
+        end
+
+        // 6. 测试 9-bit 300s 阶梯死锁倒计时在 @O 帧中的扩展编码
+        $display("\n[Case 6] 测试 9-bit 300s 死锁倒计时 @O 编码 (rec_active=0 时复用 Byte1[7:5])...");
+        // 300 = 9'b1_0010_1100 -> hi_bits = 3'b100 (4), lo_bits = 6'b101100 (44 = 0x2C)
+        // state_code=3 (LOCKED), pwd_len=0, err_count=3
+        // Byte0 = 8'h43 ("43", bit6=is_locked), Byte1 = {3'd4, 5'd0} = 8'h80 ("80"), Byte2 = {2'd3, 6'd44} = 8'hEC ("EC")
+        rx_cap_cnt = 0;
+        cap_en     = 1'b1;
+        @(posedge clk);
+        is_locked      <= 1'b1;
+        state_code     <= 4'd3;
+        pwd_len        <= 5'd0;
+        err_count      <= 2'd3;
+        lock_countdown <= 9'd300;
+        repeat (45000) @(posedge clk);
+        cap_en = 1'b0;
+
+        if (rx_cap_cnt == 9 &&
+            rx_cap_buf[0] == "@" &&
+            rx_cap_buf[1] == "O" &&
+            rx_cap_buf[2] == "4" &&
+            rx_cap_buf[3] == "3" &&
+            rx_cap_buf[4] == "8" &&
+            rx_cap_buf[5] == "0" &&
+            rx_cap_buf[6] == "E" &&
+            rx_cap_buf[7] == "C" &&
+            rx_cap_buf[8] == 8'h0A) begin
+            $display("  [PASS] 成功捕获 300s 死锁快照帧: @O4380EC\\n");
+            pass_count = pass_count + 1;
+        end else begin
+            $display("  [FAIL] 300s @O 快照帧不匹配，rx_cap_cnt=%0d", rx_cap_cnt);
+            fail_count = fail_count + 1;
+        end
+
+        // 7. 测试片上 BRAM (ERAM9K) 硬件安全黑匣子 'H' 审计查询 (@H<8-hex>\n)
+        $display("\n[Case 7] 测试片上 BRAM 硬件黑匣子 'H' (0x48) 链式 MAC 日志回读...");
+        rx_cap_cnt = 0;
+        cap_en     = 1'b1;
+        send_rx_byte(8'h48); // 'H'
+        repeat (55000) @(posedge clk);
+        cap_en = 1'b0;
+
+        if (rx_cap_cnt >= 11 &&
+            rx_cap_buf[0] == "@" &&
+            rx_cap_buf[1] == "H" &&
+            rx_cap_buf[10] == 8'h0A) begin
+            $display("  [PASS] 成功从片上 BRAM 回读 11 字节硬件审计帧: @H%c%c%c%c%c%c%c%c\\n",
+                     rx_cap_buf[2], rx_cap_buf[3], rx_cap_buf[4], rx_cap_buf[5],
+                     rx_cap_buf[6], rx_cap_buf[7], rx_cap_buf[8], rx_cap_buf[9]);
+            pass_count = pass_count + 1;
+        end else begin
+            $display("  [FAIL] 未捕获有效 @H 硬件审计帧，rx_cap_cnt=%0d", rx_cap_cnt);
             fail_count = fail_count + 1;
         end
 

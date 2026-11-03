@@ -32,6 +32,7 @@ module safe_fsm #(
     input  wire        duress_clear,   // 外部清除反挟持粘滞报警 (预留给 PC 串口或复位)
     input  wire        peep_hang,      // 视觉防窥挂起状态 (挂起下保留反挟持求救能力)
     input  wire        pwd_reset,      // 恢复码验证成功触发的密码复位脉冲 (恢复出厂 123456)
+    input  wire        remote_auth_err,// 远程开锁挑战-应答认证失败脉冲 (计入错误次数并触发阶梯锁定)
     
     // 业务状态输出 (供 OLED、数码管、LED 驱动，扩充为 4 位)
     // 0:IDLE, 1:INPUT, 2:SUCCESS, 3:ERROR, 4:LOCKED, 5:SET_NEW, 6:SET_CFM, 7:CHG_AUTH, 8:CHG_NEW, 9:CHG_CFM, 10:OP_DONE
@@ -69,15 +70,67 @@ localparam S_CHG_NEW  = 4'd9;  // B键: 改密-输入6位新密码
 localparam S_CHG_CFM  = 4'd10; // B键: 改密-再次输入确认
 localparam S_OP_DONE  = 4'd11; // 录入/改密成功提示保持 (1.5秒)
 
-reg [3:0]  state;
+reg [3:0]  state = S_IDLE;
 
-// 动态密码寄存器 (仅上电 POR 初始化与恢复码重置，不受按键 RST 影响)
-reg [23:0] current_pwd = DEFAULT_PWD;
-initial current_pwd = DEFAULT_PWD;
+// --------------------------------------------------------------------------
+// 1.0 PRESENT (ISO/IEC 29192-2) 4-bit S-Box 与 24-bit 双轮硬件加盐密码混淆核 (P1)
+//     消除密码明文驻留，11 路滑动窗口单周期全并行计算硬件密码摘要比对
+// --------------------------------------------------------------------------
+function [3:0] sbox4(input [3:0] x);
+    begin
+        case (x)
+            4'h0: sbox4 = 4'hC; 4'h1: sbox4 = 4'h5; 4'h2: sbox4 = 4'h6; 4'h3: sbox4 = 4'hB;
+            4'h4: sbox4 = 4'h9; 4'h5: sbox4 = 4'h0; 4'h6: sbox4 = 4'hA; 4'h7: sbox4 = 4'hD;
+            4'h8: sbox4 = 4'h3; 4'h9: sbox4 = 4'hE; 4'hA: sbox4 = 4'hF; 4'hB: sbox4 = 4'h8;
+            4'hC: sbox4 = 4'h4; 4'hD: sbox4 = 4'h7; 4'hE: sbox4 = 4'h1; 4'hF: sbox4 = 4'h2;
+        endcase
+    end
+endfunction
 
-// 阶梯锁定档位: 0: 60s, 1: 120s, 2: 300s (开锁成功复位为 0)
+function [23:0] pwd_cipher_hash(input [23:0] raw);
+    reg [23:0] r1, r2;
+    begin
+        // 第一轮: PRESENT S-Box 非线性代换 + 硬件固定盐值异或 (0xA5C396)
+        r1 = {sbox4(raw[23:20]), sbox4(raw[19:16]), sbox4(raw[15:12]),
+              sbox4(raw[11:8]),  sbox4(raw[7:4]),   sbox4(raw[3:0])} ^ 24'hA5C396;
+        // 第二轮: GF(2)^24 满秩循环移位线性扩散 + 次轮盐值混合 + 二次 S-Box 代换
+        r2 = r1 ^ {r1[18:0], r1[23:19]} ^ {r1[10:0], r1[23:11]} ^ 24'h5A3C69;
+        pwd_cipher_hash = {sbox4(r2[23:20]), sbox4(r2[19:16]), sbox4(r2[15:12]),
+                           sbox4(r2[11:8]),  sbox4(r2[7:4]),   sbox4(r2[3:0])};
+    end
+endfunction
+
+wire [23:0] default_pwd_hash = pwd_cipher_hash(DEFAULT_PWD);
+wire [23:0] duress_pwd_hash  = pwd_cipher_hash(DURESS_PWD);
+
+// 动态密码密文摘要寄存器 (仅上电 POR 初始化与恢复码重置，杜绝明文驻留且不受按键 RST 影响)
+// 初始值为出厂默认密码 123456 经过 PRESENT S-Box + 2轮加盐混淆后的密文哈希摘要 (0xE038C9)
+reg [23:0] current_pwd = 24'hE038C9;
+reg        por_init_done = 1'b0;
+
+// 阶梯锁定档位: 0: 1x(60s), 1: 2x(120s), 2: 5x(300s) (开锁成功复位为 0)
 reg [1:0]  lock_tier = 2'd0;
-initial lock_tier = 2'd0;
+
+initial begin
+    state          = S_IDLE;
+    state_code     = 4'd0;
+    pwd_len        = 5'd0;
+    err_count      = 2'd0;
+    lock_countdown = 9'd0;
+    unlock_en      = 1'b0;
+    duress_alarm   = 1'b0;
+    duress_trig    = 1'b0;
+    pwd_err_pulse  = 1'b0;
+    lock_timeout_pulse = 1'b0;
+    pwd_changed    = 1'b0;
+    beep_key       = 1'b0;
+    beep_err       = 1'b0;
+    beep_lock      = 1'b0;
+    beep_succ      = 1'b0;
+    current_pwd    = 24'hE038C9;
+    por_init_done  = 1'b0;
+    lock_tier      = 2'd0;
+end
 
 // 6 位输入数字暂存缓冲区 (每个 4-bit)
 reg [3:0]  input_digits [0:5];
@@ -85,33 +138,32 @@ reg [3:0]  input_digits [0:5];
 // 6 位二次确认对比暂存缓冲区 (用于 A/B 键确认新密码)
 reg [3:0]  new_pwd_digits [0:5];
 
-// 组装为 24 位总线以便单拍比对
-wire [23:0] assembled_input = {
+// 组装为 24 位总线并实时通过 PRESENT 密码学哈希核计算摘要
+wire [23:0] assembled_input      = {
     input_digits[0], input_digits[1], input_digits[2],
     input_digits[3], input_digits[4], input_digits[5]
 };
+wire [23:0] assembled_input_hash = pwd_cipher_hash(assembled_input);
 
-wire [23:0] assembled_new = {
+wire [23:0] assembled_new        = {
     new_pwd_digits[0], new_pwd_digits[1], new_pwd_digits[2],
     new_pwd_digits[3], new_pwd_digits[4], new_pwd_digits[5]
 };
+wire [23:0] assembled_new_hash   = pwd_cipher_hash(assembled_new);
 
 // 毫秒级定时器计数器
-reg [11:0] ms_timer;
-reg [9:0]  sec_tick_cnt;  // 0~999 ms 用于锁定倒计时每秒减 1
-reg [13:0] op_timeout_ms; // 15 秒无操作看门狗定时器 (0~15000ms)
+reg [11:0] ms_timer = 12'd0;
+reg [9:0]  sec_tick_cnt = 10'd0;  // 0~999 ms 用于锁定倒计时每秒减 1
+reg [13:0] op_timeout_ms = 14'd0; // 15 秒无操作看门狗定时器 (0~15000ms)
 
 // --------------------------------------------------------------------------
-// 1.1 日常开锁 16 位虚位密码移位缓冲区 (Day 9)
+// 1.1 日常开锁 16 位虚位密码移位缓冲区 (Day 9) & 11 路并行硬件哈希滑窗核 (P1)
 //     每敲一个数字整体左移 4 bit，最新数字进入 vbuf[3:0]，最多保留最近 16 位。
-//     按顺序敲入 d0 d1 d2 d3 d4 d5 后，vbuf[23:0] = {d0,d1,d2,d3,d4,d5}，
-//     与 current_pwd / DURESS_PWD 的 {高位先输} 编码天然对齐。
+//     11 组 6 位滑动窗口在同一个时钟周期内各自经过 PRESENT 双轮混淆核并行比对摘要。
 // --------------------------------------------------------------------------
-reg [63:0] vbuf;
+reg [63:0] vbuf = 64'd0;
 
-// 11 组 6 位滑动窗口 (窗口 i = vbuf[i*4+23 : i*4])，在同一个时钟周期内并行比对
-// 只有完全落在已输入范围内的窗口才有效 (i + 6 <= pwd_len)，避免缓冲区残留的 0 误匹配
-reg  [4:0]  lock_vlen; // S_LOCKED 期间用于反挟持检测的隐藏计数
+reg  [4:0]  lock_vlen = 5'd0; // S_LOCKED 期间用于反挟持检测的隐藏计数
 wire [4:0]  eff_vlen = (state == S_LOCKED) ? lock_vlen : pwd_len;
 wire [10:0] win_valid;
 wire [10:0] win_hit_norm;
@@ -120,29 +172,29 @@ wire [10:0] win_hit_duress;
 genvar g;
 generate
     for (g = 0; g < 11; g = g + 1) begin : g_vwin
+        wire [23:0] win_hash     = pwd_cipher_hash(vbuf[g*4 +: 24]);
         assign win_valid[g]      = (eff_vlen >= (g + 6));
-        assign win_hit_norm[g]   = win_valid[g] && (vbuf[g*4 +: 24] == current_pwd);
-        assign win_hit_duress[g] = win_valid[g] && (vbuf[g*4 +: 24] == DURESS_PWD);
+        assign win_hit_norm[g]   = win_valid[g] && (win_hash == current_pwd);
+        assign win_hit_duress[g] = win_valid[g] && (win_hash == duress_pwd_hash);
     end
 endgenerate
 
 wire match_norm   = |win_hit_norm;
 wire match_duress = |win_hit_duress;
 
-// A 键开荒录入门控: 只有密码仍为出厂默认值时才允许免验旧密码直接设置
-wire pwd_is_default = (current_pwd == DEFAULT_PWD);
+// A 键开荒录入门控: 只有密码摘要仍为出厂默认值时才允许免验旧密码直接设置
+wire pwd_is_default = (current_pwd == default_pwd_hash);
 
 // 改密黑名单比对: 严禁将日常主密码设置为反挟持密码 DURESS_PWD
-wire is_duress_conflict = (assembled_input == DURESS_PWD);
+wire is_duress_conflict = (assembled_input_hash == duress_pwd_hash);
 
 // --------------------------------------------------------------------------
 // 2. 状态映射输出 (与 seg_display / oled_driver 编码对齐)
-//    改为寄存器输出 (比 state 晚 1 拍 = 20ns)，切断 safe_fsm -> oled_driver
-//    字模译码之间的长组合路径，改善 50MHz 时序裕量
+//    采用同步时序与同步复位，彻底消除异步复位门控综合违例 (P0 修复)
 // --------------------------------------------------------------------------
-always @(posedge clk or negedge rst_n) begin
+always @(posedge clk) begin
     if (!rst_n) begin
-        state_code <= 4'd0;
+        state_code <= (state == S_LOCKED) ? 4'd4 : 4'd0;
     end else begin
         case (state)
             S_IDLE:     state_code <= 4'd0;
@@ -163,14 +215,21 @@ always @(posedge clk or negedge rst_n) begin
 end
 
 // --------------------------------------------------------------------------
-// 3. 主状态机流转控制
+// 3. 主状态机流转控制 (纯同步复位控制，合规支持按键复位防锁定逃逸与密码保持)
 // --------------------------------------------------------------------------
 integer i;
 
-always @(posedge clk or negedge rst_n) begin
+always @(posedge clk) begin
+    if (!por_init_done) begin
+        por_init_done <= 1'b1;
+        current_pwd   <= default_pwd_hash;
+        err_count     <= 2'd0;
+        lock_tier     <= 2'd0;
+    end
+
     if (!rst_n) begin
-        // 漏洞 1.1 修复:
-        // 按键复位 (rst_n) 绝不冲刷 current_pwd、err_count、lock_tier 和 lock_countdown！
+        // 漏洞 1.1 & P0 可综合性修复:
+        // 采用同步复位判断，按键复位 (rst_n) 绝不冲刷 current_pwd、err_count、lock_tier 和 lock_countdown！
         // 若当前正处于锁定状态 (S_LOCKED)，保持锁定并继续倒计时，严防按复位键脱逃锁定！
         if (state == S_LOCKED) begin
             pwd_len            <= 5'd0;
@@ -218,9 +277,9 @@ always @(posedge clk or negedge rst_n) begin
         pwd_err_pulse      <= 1'b0;
         lock_timeout_pulse <= 1'b0;
 
-        // 恢复码验证成功时才将密码重置回出厂默认值，并清空错误累计与锁定阶梯
+        // 恢复码验证成功时才将密码摘要重置回出厂默认值，并清空错误累计与锁定阶梯
         if (pwd_reset) begin
-            current_pwd <= DEFAULT_PWD;
+            current_pwd <= default_pwd_hash;
             err_count   <= 2'd0;
             lock_tier   <= 2'd0;
         end
@@ -229,6 +288,44 @@ always @(posedge clk or negedge rst_n) begin
         if (duress_clear) begin
             duress_alarm <= 1'b0;
         end
+
+        // P0 安全加固: 远程挑战-应答认证失败或超时彻底清理所有中间状态，计入错误次数并触发阶梯锁定
+        if (remote_auth_err && (state != S_LOCKED)) begin
+            pwd_err_pulse <= 1'b1;
+            pwd_len       <= 5'd0;
+            vbuf          <= 64'd0;
+            unlock_en     <= 1'b0;      // 发生远程认证失败立即拉低开锁使能，杜绝开锁逃逸
+            op_timeout_ms <= 14'd0;     // 重置改密/录入看门狗
+            for (i = 0; i < 6; i = i + 1) begin
+                input_digits[i]   <= 4'h0;
+                new_pwd_digits[i] <= 4'h0;
+            end
+            if (err_count >= 2'd2) begin
+                err_count    <= 2'd3;
+                sec_tick_cnt <= 10'd0;
+                beep_lock    <= 1'b1;
+                case (lock_tier)
+                    2'd0: begin
+                        lock_countdown <= LOCK_TIMEOUT_SEC[8:0];
+                        lock_tier      <= 2'd1;
+                    end
+                    2'd1: begin
+                        lock_countdown <= (LOCK_TIMEOUT_SEC * 9'd2);
+                        lock_tier      <= 2'd2;
+                    end
+                    default: begin
+                        lock_countdown <= (LOCK_TIMEOUT_SEC * 9'd5);
+                        lock_tier      <= 2'd2;
+                    end
+                endcase
+                state <= S_LOCKED;
+            end else begin
+                err_count <= err_count + 2'd1;
+                beep_err  <= 1'b1;
+                ms_timer  <= 12'd1500;
+                state     <= S_ERROR;
+            end
+        end else begin
 
         // 瑕疵 2.1 修复:
         // S_INPUT, 录入与改密流程的 15 秒无操作看门狗计时
@@ -365,21 +462,21 @@ always @(posedge clk or negedge rst_n) begin
                     pwd_err_pulse <= 1'b1;
                     if (err_count >= 2'd2) begin
                         // 连续累计满 3 次输错 -> 触发阶梯锁定！
-                        // 漏洞 1.5 修复: 阶梯递增锁定时长 (第1次 60s, 第2次 120s, 第3次及以后 300s)
+                        // 漏洞 1.5 修复: 阶梯递增锁定时长 (第1次 1x=60s, 第2次 2x=120s, 第3次及以后 5x=300s)
                         err_count    <= 2'd3;
                         sec_tick_cnt <= 10'd0;
                         beep_lock    <= 1'b1;
                         case (lock_tier)
                             2'd0: begin
-                                lock_countdown <= 9'd60;
+                                lock_countdown <= LOCK_TIMEOUT_SEC[8:0];
                                 lock_tier      <= 2'd1;
                             end
                             2'd1: begin
-                                lock_countdown <= 9'd120;
+                                lock_countdown <= (LOCK_TIMEOUT_SEC * 9'd2);
                                 lock_tier      <= 2'd2;
                             end
                             default: begin
-                                lock_countdown <= 9'd300;
+                                lock_countdown <= (LOCK_TIMEOUT_SEC * 9'd5);
                                 lock_tier      <= 2'd2;
                             end
                         endcase
@@ -423,7 +520,8 @@ always @(posedge clk or negedge rst_n) begin
                     if (ms_timer > 12'd0) begin
                         ms_timer <= ms_timer - 12'd1;
                     end else begin
-                        pwd_len <= 3'd0;
+                        pwd_len <= 5'd0;
+                        vbuf    <= 64'd0;
                         state   <= S_IDLE;
                     end
                 end
@@ -545,9 +643,11 @@ always @(posedge clk or negedge rst_n) begin
                     end else if (key_val == 4'hF) begin
                         beep_key <= 1'b1;
                         if (pwd_len == 3'd6) begin
-                            if ((assembled_input == assembled_new) && !is_duress_conflict) begin
-                                // 两次输入完全一致且非反挟持黑名单密码，写入动态密码生效！
-                                current_pwd <= assembled_input;
+                            if ((assembled_input_hash == assembled_new_hash) && !is_duress_conflict) begin
+                                // 两次输入完全一致且非反挟持黑名单密码，写入动态密码密文摘要生效！
+                                current_pwd <= assembled_input_hash;
+                                err_count   <= 2'd0;
+                                lock_tier   <= 2'd0;
                                 pwd_changed <= 1'b1;
                                 beep_succ   <= 1'b1;
                                 ms_timer    <= 12'd1500;
@@ -586,8 +686,8 @@ always @(posedge clk or negedge rst_n) begin
                     end else if (key_val == 4'hF) begin
                         beep_key <= 1'b1;
                         if (pwd_len == 3'd6) begin
-                            if (assembled_input == current_pwd) begin
-                                // 旧密码核验成功，进入新密码录入阶段！
+                            if (assembled_input_hash == current_pwd) begin
+                                // 旧密码摘要核验成功，进入新密码录入阶段！
                                 pwd_len       <= 3'd0;
                                 op_timeout_ms <= 14'd15000;
                                 state         <= S_CHG_NEW;
@@ -601,15 +701,15 @@ always @(posedge clk or negedge rst_n) begin
                                     pwd_len      <= 5'd0;
                                     case (lock_tier)
                                         2'd0: begin
-                                            lock_countdown <= 9'd60;
+                                            lock_countdown <= LOCK_TIMEOUT_SEC[8:0];
                                             lock_tier      <= 2'd1;
                                         end
                                         2'd1: begin
-                                            lock_countdown <= 9'd120;
+                                            lock_countdown <= (LOCK_TIMEOUT_SEC * 9'd2);
                                             lock_tier      <= 2'd2;
                                         end
                                         default: begin
-                                            lock_countdown <= 9'd300;
+                                            lock_countdown <= (LOCK_TIMEOUT_SEC * 9'd5);
                                             lock_tier      <= 2'd2;
                                         end
                                     endcase
@@ -687,9 +787,11 @@ always @(posedge clk or negedge rst_n) begin
                     end else if (key_val == 4'hF) begin
                         beep_key <= 1'b1;
                         if (pwd_len == 3'd6) begin
-                            if ((assembled_input == assembled_new) && !is_duress_conflict) begin
-                                // 两次输入一致且非反挟持黑名单密码，更新密码成功！
-                                current_pwd <= assembled_input;
+                            if ((assembled_input_hash == assembled_new_hash) && !is_duress_conflict) begin
+                                // 两次输入一致且非反挟持黑名单密码，更新密码密文摘要成功！
+                                current_pwd <= assembled_input_hash;
+                                err_count   <= 2'd0;
+                                lock_tier   <= 2'd0;
                                 pwd_changed <= 1'b1;
                                 beep_succ   <= 1'b1;
                                 ms_timer    <= 12'd1500;
@@ -721,6 +823,7 @@ always @(posedge clk or negedge rst_n) begin
 
             default: state <= S_IDLE;
         endcase
+        end
     end
 end
 

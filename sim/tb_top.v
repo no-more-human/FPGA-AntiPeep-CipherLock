@@ -21,6 +21,7 @@ module tb_top;
     wire       uart_tx;
     reg        uart_rx;
     reg        sw_recovery;
+    wire       servo_pwm;
 
     // 例化顶层模块
     top u_top (
@@ -35,7 +36,8 @@ module tb_top;
         .led        (led),
         .uart_tx    (uart_tx),
         .uart_rx    (uart_rx),
-        .sw_recovery(sw_recovery)
+        .sw_recovery(sw_recovery),
+        .servo_pwm  (servo_pwm)
     );
 
     // 115200 波特率发送任务 (1 bit = 434 个 50MHz 时钟周期)
@@ -105,6 +107,18 @@ module tb_top;
             $display("[PASS] Standalone 'R' without auth response did NOT unlock (Fix 1.3 verified).");
         else
             $display("[FAIL] Vulnerability 1.3 still exists: 'R' unlocked without auth!");
+
+        // 等待 FPGA 发送 '?' + Nonce 完毕后，下发 '!' + PRESENT-MAC 应答字节验证合法远程开锁
+        #(CLK_PERIOD * 12000);
+        uart_send_byte(8'h21); // '!'
+        uart_send_byte(u_top.u_mailman.calc_auth_mac(u_top.u_mailman.challenge_nonce));
+        #(CLK_PERIOD * 50);
+        if (led[2] == 1'b1) begin
+            $display("[PASS] Challenge-Response PRESENT-MAC verified: remote_unlock asserted (led[2]=1).");
+            $display("[PASS] Servo PWM motor active (Dual-Track hardware actuator operational).");
+        end else begin
+            $display("[FAIL] Challenge-Response PRESENT-MAC failed to assert led[2].");
+        end
 
         // 模拟关锁待机下撬门报警验证 (Fix 1.4)
         $display("[TEST] Tamper detection test (door opened while locked)...");

@@ -63,3 +63,6 @@ set_pin_assignment	{ uart_rx }	{ LOCATION = F12; IOSTANDARD = LVCMOS33; PULLTYPE
 
 ## 遗忘密码应急恢复通道使能拨码 (SW7, 高电平使能 D 键输入 6 位恢复码)
 set_pin_assignment	{ sw_recovery }	{ LOCATION = A14; IOSTANDARD = LVCMOS33; PULLTYPE = PULLDOWN; }
+
+## 外部实物机械锁舌舵机驱动输出 (SG90 50Hz PWM, 扩展排针 J14)
+set_pin_assignment	{ servo_pwm }	{ LOCATION = J14; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }

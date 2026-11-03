@@ -1,15 +1,18 @@
-"""PC demonstration only; this is not an implementation of the FPGA RTL."""
+"""PC demonstration only; mirrors key FPGA RTL security behaviors."""
 import math
 import time
 from .protocol import validate_pair, validate_password
 
 
 class SimulatedFPGA:
+    LOCKOUT_TIERS = (60, 120, 300)
+
     def __init__(self, normal="123456", duress="654321", clock=time.monotonic):
         validate_pair(normal, duress)
         self.normal, self.duress = normal, duress
         self.clock = clock
         self.failures = 0
+        self.lockout_tier = 0
         self.lock_until = self.open_until = 0.0
         self.err_until = self.op_done_until = 0.0
         self.peeping = False
@@ -31,7 +34,7 @@ class SimulatedFPGA:
         countdown = 0
         if self.lock_until and now < self.lock_until:
             state_code = 4
-            countdown = max(1, min(60, int(math.ceil(self.lock_until - now))))
+            countdown = max(1, min(300, int(math.ceil(self.lock_until - now))))
         elif self.open_until and now < self.open_until:
             state_code = 2
         elif self.op_done_until and now < self.op_done_until:
@@ -75,18 +78,25 @@ class SimulatedFPGA:
         if not isinstance(digits, str) or not 6 <= len(digits) <= 16 or not digits.isascii() or not digits.isdecimal():
             raise ValueError("输入应为 6~16 位数字；超长输入整串拒绝")
         self.pwd_len = 0
-        if self.lock_until or self.peeping:
-            return events
+        # Duress emergency green-channel: matches rtl/safe_fsm.v where match_duress
+        # overrides peep_hang and S_LOCKED to ensure life safety under coercion.
         if self.duress in digits:
+            self.lock_until = 0.0
+            self.failures = 0
             self.open_until = self.clock() + 3
             return events + [self.event("D"), self.event("U")]
+        if self.lock_until or self.peeping:
+            return events
         if self.normal in digits:
             self.failures = 0
+            self.lockout_tier = 0
             self.open_until = self.clock() + 3
             return events + [self.event("U")]
         self.failures += 1
         if self.failures >= 3:
-            self.lock_until = self.clock() + 60
+            duration = self.LOCKOUT_TIERS[min(self.lockout_tier, len(self.LOCKOUT_TIERS) - 1)]
+            self.lockout_tier = min(self.lockout_tier + 1, len(self.LOCKOUT_TIERS) - 1)
+            self.lock_until = self.clock() + duration
             return events + [self.event("L")]
         self.err_until = self.clock() + 1.5
         return events
@@ -100,6 +110,15 @@ class SimulatedFPGA:
         elif command == "R" and not self.lock_until and not self.peeping:
             self.open_until = self.clock() + 3
             events.append(self.event("U"))
+        elif command == "H":
+            events.append({
+                "type": "hw_audit",
+                "raw": "001A5055",
+                "timestamp_s": 1,
+                "chain_mac": 0xA5,
+                "state_code": 0,
+                "event_code": "U",
+            })
         return events
 
     def request(self, msg):
@@ -112,7 +131,9 @@ class SimulatedFPGA:
             if msg.get("old") != self.normal:
                 self.failures += 1
                 if self.failures >= 3:
-                    self.lock_until = self.clock() + 60
+                    duration = self.LOCKOUT_TIERS[min(self.lockout_tier, len(self.LOCKOUT_TIERS) - 1)]
+                    self.lockout_tier = min(self.lockout_tier + 1, len(self.LOCKOUT_TIERS) - 1)
+                    self.lock_until = self.clock() + duration
                     return [self.event("L"), {**answer, "reason": "身份验证失败，已锁定"}]
                 self.err_until = self.clock() + 1.5
                 raise ValueError("身份验证失败")
@@ -127,6 +148,7 @@ class SimulatedFPGA:
             else:
                 raise ValueError("未知密码类型")
             self.failures = 0
+            self.lockout_tier = 0
             self.op_done_until = self.clock() + 2.0
             answer["ok"] = True
         except ValueError as error:

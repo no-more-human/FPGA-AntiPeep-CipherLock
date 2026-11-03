@@ -110,7 +110,7 @@ class EvidenceRecorder:
                         paths = []
                         if frame is not None:
                             paths.append(self._snapshot(frame))
-                        if code in ("D", "C", "L", "A"):
+                        if code in ("D", "C", "L", "A", "X"):
                             self.record_until = max(self.record_until, began+self.config["event_record_seconds"])
                             self.record_events[event_id] = began+self.config["event_record_seconds"]
                             if self.writer:

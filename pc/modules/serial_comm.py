@@ -1,8 +1,8 @@
-﻿import threading
+import threading
 import time
 import serial
 from serial.tools import list_ports
-from .protocol import StreamParser, encode
+from .protocol import StreamParser, calc_auth_mac, encode
 
 
 def available_ports():
@@ -56,12 +56,12 @@ class SerialLink:
             self.stop_event.wait(2.0)
 
     def send(self, command):
-        if command not in ("S", "P", "R"):
+        if command not in ("S", "P", "R", "H"):
             raise ValueError("不支持的单字节命令")
         return self._write(command.encode("ascii"))
 
     def respond_challenge(self, nonce):
-        response = ((nonce ^ 0x5A) + 0x7E) & 0xFF
+        response = calc_auth_mac(nonce)
         return self._write(b"!" + bytes([response]))
 
     def request(self, message):
@@ -81,4 +81,3 @@ class SerialLink:
     def close(self):
         self.stop_event.set()
         self.thread.join(timeout=2)
-

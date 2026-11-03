@@ -7,11 +7,13 @@ puts "=========================================================="
 puts "               开始全自动构建安路 FPGA 工程                 "
 puts "=========================================================="
 
-open_project lock.al
+cd lock_Runs/syn_1
+source syn_1.tcl
 
-reset_runs syn_1 phy_1
-launch_runs syn_1 phy_1
-wait_run phy_1
+cd ../phy_1
+source phy_1.tcl
+file copy -force lock.bit ../best_result/lock.bit
+cd ../..
 
 puts "=========================================================="
 puts "               FPGA 全流程构建成功，比特流已生成!           "

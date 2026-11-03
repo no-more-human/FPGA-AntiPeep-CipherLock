@@ -48,7 +48,7 @@ module uart_mailman #(
     input  wire [3:0] state_code,     // 主状态机状态码 (0~10)
     input  wire [4:0] pwd_len,        // 当前已输入密码位数 (0~16)
     input  wire [1:0] err_count,      // 累计输错次数 (0~3)
-    input  wire [6:0] lock_countdown, // 锁定倒计时秒数 (0~60)
+    input  wire [8:0] lock_countdown, // 阶梯锁定倒计时秒数 (0~300, P0 扩展为 9-bit 防截断)
     input  wire       rec_active,     // 应急恢复模式激活
     input  wire [2:0] rec_len,        // 应急恢复已输位数 (0~6)
     input  wire       rec_locked,     // 应急恢复锁定状态
@@ -66,6 +66,7 @@ module uart_mailman #(
 localparam [7:0] CH_SAFE      = 8'h53;  // 'S'
 localparam [7:0] CH_PEEP      = 8'h50;  // 'P'
 localparam [7:0] CH_REMOTE    = 8'h52;  // 'R'
+localparam [7:0] CH_AUDIT_REQ = 8'h48;  // 'H' 查询片上 BRAM 硬件黑匣子最新审计记录
 localparam [7:0] CH_CHALLENGE = 8'h3F;  // '?' FPGA 发给 PC 的挑战前导符
 localparam [7:0] CH_RESPONSE  = 8'h21;  // '!' PC 回传给 FPGA 的应答前导符
 localparam [7:0] CH_UNLOCK    = 8'h55;  // 'U'
@@ -85,9 +86,10 @@ uart_rx #(.CLK_FREQ(CLK_FREQ), .BAUD(BAUD)) u_ear (
     .rx_data(rx_byte), .rx_valid(rx_ok)
 );
 
-wire rx_safe   = rx_ok && (rx_byte == CH_SAFE);
-wire rx_peep   = rx_ok && (rx_byte == CH_PEEP);
-wire rx_remote = rx_ok && (rx_byte == CH_REMOTE);
+wire rx_safe      = rx_ok && (rx_byte == CH_SAFE);
+wire rx_peep      = rx_ok && (rx_byte == CH_PEEP);
+wire rx_remote    = rx_ok && (rx_byte == CH_REMOTE);
+wire rx_audit_req = rx_ok && (rx_byte == CH_AUDIT_REQ);
 
 // 偷看挂起,收到 'S' 才放人
 always @(posedge clk or negedge rst_n) begin
@@ -97,17 +99,92 @@ always @(posedge clk or negedge rst_n) begin
 end
 
 // --------------------------------------------------------------------------
-// 漏洞 1.3 修复: 远程开锁 8-bit LFSR 挑战-应答认证引擎
+// 漏洞 1.3 & P1 硬件安全升级:
+//   16-bit 混合熵源伽罗瓦 LFSR + PRESENT (ISO/IEC 29192-2) S-Box 双轮非线性挑战-应答 MAC 核
 // 1. PC 发送 'R' (0x52) 请求开锁；
-// 2. FPGA 产生随机 Nonce，回传 '?' (0x3F) + Nonce (2 字节挑战包)；
-// 3. PC 接收后计算 f(Nonce) = ((Nonce ^ 0x5A) + 0x7E) & 0xFF，回传 '!' + 运算结果；
-// 4. FPGA 校验一致后才允许拉高 remote_unlock 3 秒；超时(2s)或错误一律拒绝并报警！
+// 2. FPGA 由 16-bit 混合物理抖动熵源提取 Nonce，回传 '?' (0x3F) + Nonce (2 字节挑战包)；
+// 3. PC 接收后通过 PRESENT S-Box 双轮 ARX 算法计算 MAC = calc_auth_mac(Nonce)，回传 '!' + MAC；
+// 4. FPGA 硬件核单拍校验一致后才允许拉高 remote_unlock 3 秒；超时(2s)或错误一律拒绝并输出 auth_err 触发锁定计数！
 // --------------------------------------------------------------------------
-reg [7:0] lfsr;
+function [3:0] auth_sbox(input [3:0] x);
+    begin
+        case (x)
+            4'h0: auth_sbox = 4'hC; 4'h1: auth_sbox = 4'h5; 4'h2: auth_sbox = 4'h6; 4'h3: auth_sbox = 4'hB;
+            4'h4: auth_sbox = 4'h9; 4'h5: auth_sbox = 4'h0; 4'h6: auth_sbox = 4'hA; 4'h7: auth_sbox = 4'hD;
+            4'h8: auth_sbox = 4'h3; 4'h9: auth_sbox = 4'hE; 4'hA: auth_sbox = 4'hF; 4'hB: auth_sbox = 4'h8;
+            4'hC: auth_sbox = 4'h4; 4'hD: auth_sbox = 4'h7; 4'hE: auth_sbox = 4'h1; 4'hF: auth_sbox = 4'h2;
+        endcase
+    end
+endfunction
+
+function [7:0] calc_auth_mac(input [7:0] n);
+    reg [7:0] r1, r2;
+    begin
+        // 第一轮: 子密钥加盐 (0x5A) + PRESENT S-Box 非线性代换 + 循环左移 3 位与模加扩散 (0x7E)
+        r1 = {auth_sbox(n[7:4] ^ 4'h5), auth_sbox(n[3:0] ^ 4'hA)};
+        r2 = {r1[4:0], r1[7:5]} + 8'h7E;
+        // 第二轮: 二次 PRESENT S-Box 代换 + 末轮白化密钥异或 (0xC3)
+        calc_auth_mac = {auth_sbox(r2[7:4]), auth_sbox(r2[3:0])} ^ 8'hC3;
+    end
+endfunction
+
+// --------------------------------------------------------------------------
+// P1 硬件物理安全升级: 片上多级环形振荡器 (Ring Oscillator, RO) 物理真随机发生器 (TRNG)
+// 利用 EG4S20 片内反相器微观传输延迟的物理热噪声与微观时钟抖动 (Phase Jitter) 产生非确定性真随机熵
+// 采用 3 组素数级 (3级, 5级, 7级) 自由自激振荡环异或混叠 + 50MHz 采样 Von Neumann 差分去偏
+// --------------------------------------------------------------------------
+(* syn_keep = "true", keep = "true" *) wire [2:0] ro_r1;
+(* syn_keep = "true", keep = "true" *) wire [4:0] ro_r2;
+(* syn_keep = "true", keep = "true" *) wire [6:0] ro_r3;
+
+// Ring 1: 3 级反相器自激环 (NAND门受 rst_n 启动控制，硬件上电平稳启振)
+assign #1 ro_r1[0] = ~(ro_r1[2] & rst_n);
+assign #1 ro_r1[1] = ~ro_r1[0];
+assign #1 ro_r1[2] = ~ro_r1[1];
+
+// Ring 2: 5 级反相器自激环
+assign #1 ro_r2[0] = ~(ro_r2[4] & rst_n);
+assign #1 ro_r2[1] = ~ro_r2[0];
+assign #1 ro_r2[2] = ~ro_r2[1];
+assign #1 ro_r2[3] = ~ro_r2[2];
+assign #1 ro_r2[4] = ~ro_r2[3];
+
+// Ring 3: 7 级反相器自激环
+assign #1 ro_r3[0] = ~(ro_r3[6] & rst_n);
+assign #1 ro_r3[1] = ~ro_r3[0];
+assign #1 ro_r3[2] = ~ro_r3[1];
+assign #1 ro_r3[3] = ~ro_r3[2];
+assign #1 ro_r3[4] = ~ro_r3[3];
+assign #1 ro_r3[5] = ~ro_r3[4];
+assign #1 ro_r3[6] = ~ro_r3[5];
+
+// 3 组素数环输出多重混叠
+wire ro_osc_raw = ro_r1[2] ^ ro_r2[4] ^ ro_r3[6];
+
+// 50MHz 系统时钟域 2 级触发器同步采样抽取微观相位抖动 (Von Neumann 差分去偏)
+reg ro_sync_d1, ro_sync_d2, ro_sample;
 always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) lfsr <= 8'hA5;
-    else lfsr <= {lfsr[6:0], lfsr[7] ^ lfsr[5] ^ lfsr[4] ^ lfsr[3]};
+    if (!rst_n) begin
+        ro_sync_d1 <= 1'b0;
+        ro_sync_d2 <= 1'b0;
+        ro_sample  <= 1'b0;
+    end else begin
+        ro_sync_d1 <= ro_osc_raw;
+        ro_sync_d2 <= ro_sync_d1;
+        ro_sample  <= ro_sync_d2;
+    end
 end
+wire ro_entropy = ro_sync_d2 ^ ro_sample; // 相邻采样差分提取非确定性物理抖动
+
+reg [15:0] lfsr;
+wire       lfsr_fb = lfsr[15] ^ ro_entropy ^ tick_1k ^ rx_ok;
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) lfsr <= 16'hA55A;
+    else lfsr <= {lfsr[14:0], 1'b0} ^ (lfsr_fb ? 16'hB400 : 16'h0000);
+end
+
+wire [7:0] next_nonce = ((lfsr[7:0] ^ lfsr[15:8] ^ {7'b0, ro_sync_d2}) == 8'h00) ? 
+                        8'h5A : (lfsr[7:0] ^ lfsr[15:8] ^ {7'b0, ro_sync_d2});
 
 reg [7:0]  challenge_nonce;
 reg [7:0]  expected_response;
@@ -144,8 +221,8 @@ always @(posedge clk or negedge rst_n) begin
         end else begin
             // 收到 PC 请求 'R'
             if (rx_remote && !auth_waiting) begin
-                challenge_nonce   <= (lfsr == 8'h00) ? 8'h5A : lfsr;
-                expected_response <= (((lfsr == 8'h00 ? 8'h5A : lfsr) ^ 8'h5A) + 8'h7E);
+                challenge_nonce   <= next_nonce;
+                expected_response <= calc_auth_mac(next_nonce);
                 auth_waiting      <= 1'b1;
                 auth_expect_byte  <= 1'b0;
                 auth_timeout_ms   <= 12'd2000; // 2 秒超时
@@ -195,13 +272,15 @@ end
 assign remote_unlock = remote_unlock_r && !is_locked && !peep_hang;
 
 // --------------------------------------------------------------------------
-// 虚拟 OLED 24-bit 状态快照打包与边沿检测
+// 虚拟 OLED 24-bit 状态快照打包与边沿检测 (P0 支持 9-bit 阶梯锁定倒计时 0~300s)
 // --------------------------------------------------------------------------
-wire [5:0] eff_countdown = rec_locked ? rec_countdown[5:0] : lock_countdown[5:0];
-wire [7:0] snap_b0       = {peep_hang, door_alert, rec_locked, rec_active, state_code};
-wire [7:0] snap_b1       = {rec_len, pwd_len};
-wire [7:0] snap_b2       = {err_count, eff_countdown};
-wire [23:0] oled_snap    = {snap_b0, snap_b1, snap_b2};
+wire [8:0] full_countdown = rec_locked ? {3'b000, rec_countdown[5:0]} : lock_countdown;
+wire [5:0] eff_countdown  = full_countdown[5:0];
+wire [2:0] snap_b1_hi     = rec_active ? rec_len : full_countdown[8:6];
+wire [7:0] snap_b0        = {peep_hang, door_alert, rec_locked, rec_active, state_code};
+wire [7:0] snap_b1        = {snap_b1_hi, pwd_len};
+wire [7:0] snap_b2        = {err_count, eff_countdown};
+wire [23:0] oled_snap     = {snap_b0, snap_b1, snap_b2};
 
 reg [23:0] oled_snap_d1;
 reg        rx_cmd_d1;
@@ -241,8 +320,27 @@ function [7:0] oled_frame_byte(input [3:0] idx, input [23:0] snap);
     end
 endfunction
 
+function [7:0] audit_frame_byte(input [3:0] idx, input [31:0] rec);
+    begin
+        case (idx)
+            4'd0:  audit_frame_byte = 8'h40;              // '@'
+            4'd1:  audit_frame_byte = 8'h48;              // 'H'
+            4'd2:  audit_frame_byte = hex_char(rec[31:28]);
+            4'd3:  audit_frame_byte = hex_char(rec[27:24]);
+            4'd4:  audit_frame_byte = hex_char(rec[23:20]);
+            4'd5:  audit_frame_byte = hex_char(rec[19:16]);
+            4'd6:  audit_frame_byte = hex_char(rec[15:12]);
+            4'd7:  audit_frame_byte = hex_char(rec[11:8]);
+            4'd8:  audit_frame_byte = hex_char(rec[7:4]);
+            4'd9:  audit_frame_byte = hex_char(rec[3:0]);
+            4'd10: audit_frame_byte = 8'h0A;              // '\n'
+            default: audit_frame_byte = 8'h0A;
+        endcase
+    end
+endfunction
+
 // --------------------------------------------------------------------------
-// 待发事件队列与 @O 快照帧发送状态机
+// 待发事件队列与 @O 快照帧 / @H 硬件黑匣子审计帧发送状态机
 // --------------------------------------------------------------------------
 reg pend_d; // 'D' Duress
 reg pend_x; // 'X' Tamper (非法撬门)
@@ -258,12 +356,70 @@ reg        oled_sending;
 reg [3:0]  oled_idx;
 reg [23:0] latched_snap;
 
+reg        pend_audit;
+reg        audit_sending;
+reg [3:0]  audit_idx;
+reg [31:0] latched_audit;
+
 reg        tx_start_r;
 reg [7:0]  tx_data_r;
 reg        tx_is_evt;
 wire       tx_busy;
 
 wire any_evt_pend = pend_d | pend_x | pend_l | pend_t | pend_k | pend_a | pend_u | pend_e;
+
+// --------------------------------------------------------------------------
+// P1-3: 片上 BRAM (ERAM9K) 256x32-bit 硬件安全审计黑匣子环形缓冲区
+//       记录格式: {运行秒时间戳[11:0], 链式防篡改摘要[3:0], 状态快照Byte0[7:0], 事件码[7:0]}
+//       支持通过串口指令 'H' (0x48) 实时回传最新硬件黑匣子记录 "@H<8位Hex>\n"
+// --------------------------------------------------------------------------
+(* ram_style = "block" *) reg [31:0] audit_bram [0:255];
+reg [31:0] audit_rd_data;
+reg [7:0]  audit_wr_ptr;
+reg [7:0]  audit_rd_ptr;
+reg [9:0]  audit_ms_cnt;
+reg [11:0] audit_sec_cnt;
+reg [3:0]  audit_chain_mac;
+
+wire       audit_we    = (tx_start_r && tx_is_evt) || rx_cmd_d1;
+wire [7:0] audit_code  = (tx_start_r && tx_is_evt) ? tx_data_r : rx_byte;
+wire [3:0] next_mac    = auth_sbox(audit_chain_mac ^ audit_code[7:4] ^ audit_code[3:0] ^ snap_b0[3:0]);
+wire [31:0] audit_wdata = {audit_sec_cnt, next_mac, snap_b0, audit_code};
+
+// 标准无异步复位同步读写进程，确保安路 TD 100% 映射为片上 ERAM9K 硬件存储块
+always @(posedge clk) begin
+    if (audit_we) begin
+        audit_bram[audit_wr_ptr] <= audit_wdata;
+    end
+    audit_rd_data <= audit_bram[audit_rd_ptr];
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        audit_wr_ptr    <= 8'd0;
+        audit_rd_ptr    <= 8'd0;
+        audit_ms_cnt    <= 10'd0;
+        audit_sec_cnt   <= 12'd0;
+        audit_chain_mac <= 4'hA;
+    end else begin
+        if (tick_1k) begin
+            if (audit_ms_cnt >= 10'd999) begin
+                audit_ms_cnt  <= 10'd0;
+                audit_sec_cnt <= audit_sec_cnt + 12'd1;
+            end else begin
+                audit_ms_cnt <= audit_ms_cnt + 10'd1;
+            end
+        end
+        if (audit_we) begin
+            audit_rd_ptr    <= audit_wr_ptr;
+            audit_wr_ptr    <= audit_wr_ptr + 8'd1;
+            audit_chain_mac <= next_mac;
+        end else if (rx_audit_req && (audit_rd_ptr > 8'd0)) begin
+            // 支持连续按 'H' 回溯历史黑匣子记录
+            audit_rd_ptr <= audit_rd_ptr - 8'd1;
+        end
+    end
+end
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -302,14 +458,18 @@ end
 //   2. 帧间仲裁: 单字节事件 ('D' > 'L' > 'T' > 'K' > 'A' > 'U' > 'E') 绝对优先于新 @O 快照帧
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        tx_start_r   <= 1'b0;
-        tx_data_r    <= 8'd0;
-        tx_is_evt    <= 1'b0;
-        pend_oled    <= 1'b0;
-        pend_chal    <= 1'b0;
-        oled_sending <= 1'b0;
-        oled_idx     <= 4'd0;
-        latched_snap <= 24'd0;
+        tx_start_r    <= 1'b0;
+        tx_data_r     <= 8'd0;
+        tx_is_evt     <= 1'b0;
+        pend_oled     <= 1'b0;
+        pend_chal     <= 1'b0;
+        pend_audit    <= 1'b0;
+        oled_sending  <= 1'b0;
+        oled_idx      <= 4'd0;
+        latched_snap  <= 24'd0;
+        audit_sending <= 1'b0;
+        audit_idx     <= 4'd0;
+        latched_audit <= 32'd0;
     end else begin
         tx_start_r <= 1'b0;
         tx_is_evt  <= 1'b0;
@@ -320,6 +480,10 @@ always @(posedge clk or negedge rst_n) begin
 
         if (oled_changed) begin
             pend_oled <= 1'b1;
+        end
+
+        if (rx_audit_req) begin
+            pend_audit <= 1'b1;
         end
 
         if (!tx_busy && !tx_start_r) begin
@@ -345,6 +509,15 @@ always @(posedge clk or negedge rst_n) begin
                 end else begin
                     oled_idx <= oled_idx + 4'd1;
                 end
+            end else if (audit_sending) begin
+                tx_start_r <= 1'b1;
+                tx_data_r  <= audit_frame_byte(audit_idx, latched_audit);
+                if (audit_idx == 4'd10) begin
+                    audit_sending <= 1'b0;
+                    audit_idx     <= 4'd0;
+                end else begin
+                    audit_idx <= audit_idx + 4'd1;
+                end
             end else if (any_evt_pend) begin
                 tx_start_r <= 1'b1;
                 tx_is_evt  <= 1'b1;
@@ -363,6 +536,13 @@ always @(posedge clk or negedge rst_n) begin
                 oled_sending <= 1'b1;
                 oled_idx     <= 4'd1;
                 pend_oled    <= oled_changed; // 若恰在同一拍又有新跳变则保留挂起
+            end else if (pend_audit) begin
+                tx_start_r    <= 1'b1;
+                tx_data_r     <= 8'h40; // '@' (Byte 0 of @H frame)
+                latched_audit <= audit_rd_data;
+                audit_sending <= 1'b1;
+                audit_idx     <= 4'd1;
+                pend_audit    <= 1'b0;
             end
         end
     end

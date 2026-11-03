@@ -117,10 +117,9 @@ always @(posedge clk or negedge rst_n) begin
                         door_state <= ST_DOOR_WAIT;
                     end
                 end else if (door_open) begin
-                    // 处于闭锁布防状态下，未开锁却门被拉开 -> 非法撬门报警！
+                    // 处于闭锁布防状态下，未开锁却门被拉开 -> 非法撬门报警 (仅触发 tamper_pulse 'X'，不混发普通未关门 'A')！
                     tamper_alert <= 1'b1;
                     tamper_pulse <= 1'b1;
-                    alert_pulse  <= 1'b1;
                     door_state   <= ST_DOOR_TAMPER;
                 end
             end
@@ -190,8 +189,8 @@ always @(posedge clk or negedge rst_n) begin
                     door_state   <= ST_DOOR_IDLE;
                 end else if (tick_1k) begin
                     if (ms_cnt >= 10'd999) begin
-                        ms_cnt      <= 10'd0;
-                        alert_pulse <= 1'b1; // 每秒产生告警脉冲
+                        ms_cnt       <= 10'd0;
+                        tamper_pulse <= 1'b1; // 每秒产生非法撬门复响告警脉冲 ('X')
                     end else begin
                         ms_cnt <= ms_cnt + 10'd1;
                     end

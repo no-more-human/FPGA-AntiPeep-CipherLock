@@ -17,7 +17,7 @@ set_false_path -to [get_ports {led[*]}]
 # 4. 外设慢速总线输出延时松弛约束
 set_output_delay -max 10.000 -clock clk_50M [get_ports {seg_out[*] seg_cs[*]}]
 set_output_delay -max 10.000 -clock clk_50M [get_ports {key_col[*]}]
-set_output_delay -max 10.000 -clock clk_50M [get_ports {buzzer_out}]
+set_output_delay -max 10.000 -clock clk_50M [get_ports {buzzer_out servo_pwm}]
 # 5. Day7 新增 UART 引脚约束
 set_false_path -from [get_ports {uart_rx}]
 set_false_path -from [get_ports {sw_recovery}]

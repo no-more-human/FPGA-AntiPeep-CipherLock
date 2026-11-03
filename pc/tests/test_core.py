@@ -11,7 +11,7 @@ from modules.audit import AuditStore
 from modules.config import load_config
 from modules.controller import Controller, decode_oled_rows
 from modules.policy import VisionPolicy, Decision
-from modules.protocol import StreamParser, encode
+from modules.protocol import StreamParser, calc_auth_mac, encode
 from modules.simulator import SimulatedFPGA
 
 
@@ -120,6 +120,32 @@ class ProtocolTests(unittest.TestCase):
         # 14. state_code=10 (OP_DONE)
         self.assertEqual(decode_oled_rows({"state_code": 10, "err_count": 0}),
                          ("设置成功", "密码已更新", "", "剩余: 3 次"))
+        # 15. 9-bit tiered lockout countdown (300s)
+        self.assertEqual(decode_oled_rows({"state_code": 4, "countdown": 300}),
+                         ("欢迎使用", "系统已锁定", "倒计时: 300 秒", "键盘已锁定"))
+
+    def test_oled_9bit_tiered_lockout_and_hw_audit_frame_parsing(self):
+        parser = StreamParser()
+        # @O4380EC\n -> state_code=3, rec_locked=0, door_alert=1, countdown=300 (0x12C: hi=4 in Byte1[7:5], lo=44 in Byte2[5:0])
+        frames = parser.feed(b"@O4380EC\n@H001A5355\n?Z")
+        self.assertEqual(len(frames), 3)
+        self.assertEqual(frames[0]["type"], "oled")
+        self.assertEqual(frames[0]["countdown"], 300)
+        self.assertEqual(frames[0]["rec_len"], 0)
+        self.assertEqual(frames[1], {
+            "type": "hw_audit",
+            "raw": "001A5355",
+            "timestamp_s": 1,
+            "chain_mac": 0xA5,
+            "state_code": 3,
+            "event_code": "U",
+        })
+        self.assertEqual(frames[2], {"type": "challenge", "nonce": ord("Z")})
+
+    def test_present_sbox_auth_mac_deterministic_and_nonlinear(self):
+        self.assertEqual(calc_auth_mac(0x00), 0xE9)
+        self.assertEqual(calc_auth_mac(0x5A), 0xDA)
+        self.assertEqual(len({calc_auth_mac(i) for i in range(256)}), 256)
 
 
 class PolicyTests(unittest.TestCase):
@@ -161,20 +187,27 @@ class SimulatorTests(unittest.TestCase):
         self.assertEqual(self.codes(self.sim.submit("88912345666")), ["U"])
         self.assertEqual(self.codes(self.sim.submit("123456654321")), ["D", "U"])
 
-    def test_lockout_expires_and_blocks_all_keypad_input(self):
+    def test_lockout_expires_blocks_normal_and_supports_tiered_lockout_and_duress(self):
         for _ in range(2):
             self.assertEqual(self.codes(self.sim.submit("000000")), [])
         self.assertEqual(self.codes(self.sim.submit("000000")), ["L"])
+        # Tier 1 lockout = 60s; normal password blocked
+        self.assertEqual(self.sim.oled_snapshot()["countdown"], 60)
         self.assertEqual(self.sim.submit("123456"), [])
-        self.assertEqual(self.sim.submit("654321"), [])
         self.clock.now += 60
         self.assertIn("T", self.codes(self.sim.tick()))
+        # Tier 2 lockout = 120s
+        for _ in range(3):
+            self.sim.submit("000000")
+        self.assertEqual(self.sim.oled_snapshot()["countdown"], 120)
+        # Duress green-channel overrides lockout matching rtl/safe_fsm.v
+        self.assertEqual(self.codes(self.sim.submit("654321")), ["D", "U"])
         self.assertEqual(self.codes(self.sim.submit("123456")), ["U"])
 
-    def test_peep_suspends_all_keypad_input_matching_rtl(self):
+    def test_peep_suspends_normal_keypad_input_while_preserving_duress_matching_rtl(self):
         self.sim.command("P")
         self.assertEqual(self.sim.submit("123456"), [])
-        self.assertEqual(self.sim.submit("99654321"), [])
+        self.assertEqual(self.codes(self.sim.submit("99654321")), ["D", "U"])
 
     def test_change_rejects_wrong_old_duplicate_and_bad_length(self):
         base = {"id": "1", "op": "password_change", "kind": "normal", "old": "000000", "new": "112233"}
@@ -308,6 +341,17 @@ class ControllerTests(unittest.TestCase):
         self.controller.demo = False
         with self.assertRaises(ValueError):
             self.controller.change_password("normal", "123456", "112233", "112233", lambda *a: None)
+
+    def test_tamper_event_x_and_hw_audit_frame_handling(self):
+        self.controller.handle({"type": "event", "code": "X"})
+        self.assertIn("非法撬门报警", self.controller.state.lock)
+        self.assertEqual(self.recorder.jobs[-1][1], "X")
+        self.controller.send("H")
+        while self.events:
+            self.controller.handle(self.events.pop(0))
+        hw_logs = [line for line in self.controller.lines if line[1] == "HW_AUDIT"]
+        self.assertEqual(len(hw_logs), 1)
+        self.assertIn("BRAM黑匣子审计帧", hw_logs[0][2])
 
 
 if __name__ == "__main__":

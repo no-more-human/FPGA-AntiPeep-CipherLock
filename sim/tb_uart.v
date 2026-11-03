@@ -150,7 +150,10 @@ module tb_uart;
         while ((rx_valid !== 1'b1) && (k < 6000)) begin @(posedge clk); k = k + 1; end
         if (rx_data === 8'h55) begin $display("  [PASS]    连发第 1 字节 'U'"); pass_cnt = pass_cnt + 1; end
         else begin $display("  [FAIL]    连发第 1 字节,收到 0x%02X", rx_data); fail_cnt = fail_cnt + 1; end
+        while (tx_busy) @(posedge clk);
+        tx_start <= 1'b1;  tx_data <= 8'h53;
         @(posedge clk);
+        tx_start <= 1'b0;
         k = 0;
         while ((rx_valid !== 1'b1) && (k < 6000)) begin @(posedge clk); k = k + 1; end
         if (rx_data === 8'h53) begin $display("  [PASS]    连发第 2 字节 'S'"); pass_cnt = pass_cnt + 1; end

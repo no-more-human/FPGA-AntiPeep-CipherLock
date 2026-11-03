@@ -150,7 +150,8 @@ class MonitorApp:
         tools.pack(fill="x", pady=3)
         ttk.Button(tools, text="测试 P · 防窥", command=lambda: self.test_command("P")).pack(side="left", expand=True, fill="x", padx=(0, 4))
         ttk.Button(tools, text="测试 S · 解挂", command=self.restore_vision).pack(side="left", expand=True, fill="x", padx=(0, 4))
-        ttk.Button(tools, text="测试 R · 开锁", command=lambda: self.test_command("R")).pack(side="left", expand=True, fill="x")
+        ttk.Button(tools, text="测试 R · 开锁", command=lambda: self.test_command("R")).pack(side="left", expand=True, fill="x", padx=(0, 4))
+        ttk.Button(tools, text="测试 H · 黑匣子", command=lambda: self.test_command("H")).pack(side="left", expand=True, fill="x")
         ttk.Label(side, text="收到设备回报后更新锁体状态。",
                   foreground=MUTED, wraplength=350).pack(anchor="w", pady=3)
         ttk.Separator(side).pack(fill="x", pady=4)

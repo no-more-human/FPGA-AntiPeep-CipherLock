@@ -1,4 +1,4 @@
-﻿import time
+import time
 import uuid
 from collections import deque
 
@@ -31,7 +31,7 @@ def decode_oled_rows(state):
     pwd_len = max(0, min(16, int(state.get("pwd_len", 0))))
     rec_len = max(0, min(6, int(state.get("rec_len", 0))))
     err_count = max(0, min(3, int(state.get("err_count", 0))))
-    countdown = max(0, min(60, int(state.get("countdown", 0))))
+    countdown = max(0, min(300, int(state.get("countdown", 0))))
 
     remain = max(0, 3 - err_count)
     remain_text = f"剩余: {remain} 次"
@@ -175,7 +175,7 @@ class Controller:
         if not v["decision"].face_ready or v["decision"].peeping or self.peeping:
             raise ValueError("需单人白名单人脸连续稳定识别，且没有防窥告警")
         if self.state.lockout:
-            raise ValueError("下位机处于 60s 试错锁定倒计时中，请等待自动解除")
+            raise ValueError("下位机处于试错锁定倒计时中，请等待自动解除")
         if now-self.last_remote < 5:
             raise ValueError("开锁指令冷却中，请稍后")
         if not self.send("R"):
@@ -233,6 +233,14 @@ class Controller:
                 if key in msg:
                     self.oled_state[key] = int(msg[key])
             self.oled_rows = decode_oled_rows(self.oled_state)
+        elif kind == "hw_audit":
+            self.device_seen = True
+            self.log(
+                "HW_AUDIT",
+                f"BRAM黑匣子审计帧 @{msg.get('raw')}: 事件={msg.get('event_code')} "
+                f"状态={msg.get('state_code')} 时标={msg.get('timestamp_s')}s "
+                f"链式MAC=0x{int(msg.get('chain_mac', 0)):02X}",
+            )
         elif kind == "link":
             connected = bool(msg.get("connected"))
             if self.connected != connected:
@@ -271,7 +279,7 @@ class Controller:
             self.send("P" if self.peeping else "S")
         elif kind == "challenge":
             nonce = int(msg.get("nonce", 0))
-            self.log("AUTH", f"收到下位机认证挑战 Nonce: 0x{nonce:02X}，正在回传验算应答")
+            self.log("AUTH", f"收到下位机认证挑战 Nonce: 0x{nonce:02X}，正在回传 PRESENT-MAC 应答")
             if self.link:
                 self.link.respond_challenge(nonce)
         elif kind == "event" and msg.get("code") in EVENTS:
@@ -285,7 +293,7 @@ class Controller:
             self.device_seen = True
             self.state.apply(code, now)
             if self.demo and self.sim:
-                if code == "A":
+                if code in ("A", "X"):
                     self.sim.door_alert = True
                 elif code == "K":
                     self.sim.door_alert = False
@@ -324,4 +332,3 @@ class Controller:
 
     def close(self):
         self.disconnect()
-
