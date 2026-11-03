@@ -230,11 +230,11 @@ end
 
 // --------------------------------------------------------------------------
 // 3. 4 位动态扫描逻辑: 1ms 刷新 1 位, 整屏 250Hz, 绝对无闪烁
-// CS 编码与引脚定义 (依据 lock.adc: seg_cs[0]=C9=COM1 最左位, seg_cs[3]=A3=COM4 最右位):
-//   cs_idx = 2'd0 -> seg_cs = 4'b1110 (选通 COM1, 最左位 MSB, 输出 seg_buf3)
-//   cs_idx = 2'd1 -> seg_cs = 4'b1101 (选通 COM2, 第 2 位,     输出 seg_buf2)
-//   cs_idx = 2'd2 -> seg_cs = 4'b1011 (选通 COM3, 第 3 位,     输出 seg_buf1)
-//   cs_idx = 2'd3 -> seg_cs = 4'b0111 (选通 COM4, 最右位 LSB, 输出 seg_buf0)
+// 数码管显示顺序修改: 从 1234 调整为 4321 (与硬件位选物理引脚正确对齐)
+//   cs_idx = 2'd0 -> seg_cs = 4'b1110 (选通 CS[0], 输出 seg_buf0)
+//   cs_idx = 2'd1 -> seg_cs = 4'b1101 (选通 CS[1], 输出 seg_buf1)
+//   cs_idx = 2'd2 -> seg_cs = 4'b1011 (选通 CS[2], 输出 seg_buf2)
+//   cs_idx = 2'd3 -> seg_cs = 4'b0111 (选通 CS[3], 输出 seg_buf3)
 // --------------------------------------------------------------------------
 reg [1:0] scan_idx;
 
@@ -247,20 +247,20 @@ always @(posedge clk or negedge rst_n) begin
         scan_idx <= scan_idx + 2'd1;
         case (scan_idx)
             2'd0: begin
-                seg_cs  <= 4'b1110; // 选通 COM1 (最左位)
-                seg_out <= seg_buf3;
+                seg_cs  <= 4'b1110;
+                seg_out <= seg_buf0;
             end
             2'd1: begin
-                seg_cs  <= 4'b1101; // 选通 COM2 (第 2 位)
-                seg_out <= seg_buf2;
-            end
-            2'd2: begin
-                seg_cs  <= 4'b1011; // 选通 COM3 (第 3 位)
+                seg_cs  <= 4'b1101;
                 seg_out <= seg_buf1;
             end
+            2'd2: begin
+                seg_cs  <= 4'b1011;
+                seg_out <= seg_buf2;
+            end
             2'd3: begin
-                seg_cs  <= 4'b0111; // 选通 COM4 (最右位)
-                seg_out <= seg_buf0;
+                seg_cs  <= 4'b0111;
+                seg_out <= seg_buf3;
             end
         endcase
     end
