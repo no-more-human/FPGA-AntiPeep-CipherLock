@@ -35,10 +35,7 @@ module top(
     input  wire       uart_rx,     // 收 PC 的话 (F12)
 
     // 拨码开关 SW7, 拨上去才允许走恢复码通道 (A14, 内部下拉)
-    input  wire       sw_recovery,
-
-    // 外部机械锁舌舵机驱动接口 (标准 50Hz PWM，引脚: J14，驱动 SG90 实物锁舌)
-    output wire       servo_pwm
+    input  wire       sw_recovery
 );
 
 // --------------------------------------------------------------------------
@@ -379,38 +376,6 @@ recovery_mgr #(
     .rec_countdown(rec_countdown)
 );
 
-// --------------------------------------------------------------------------
-// 11. P1: 外部实物机械锁舌舵机 (SG90) 50Hz PWM 发生器 (软硬件双模设计)
-//     板载 LED2 (B16) 100% 保持点亮 3 秒 (零接线高可靠保底)
-//     同时 servo_pwm 输出标准舵机脉冲 (驱动亚克力实物箱舵机旋转开门)
-//     周期: 20ms (1,000,000 个 50MHz 时钟周期)
-//     闭锁脉宽: 1.0ms (50,000 周期, 舵机 0 度, 锁舌伸出锁门)
-//     开锁脉宽: 2.0ms (100,000 周期, 舵机 90度, 锁舌缩回开锁)
-// --------------------------------------------------------------------------
-reg [19:0] servo_cnt;
-reg        servo_pwm_r;
-
-always @(posedge clk_50M or negedge rst_sync_n) begin
-    if (!rst_sync_n) begin
-        servo_cnt   <= 20'd0;
-        servo_pwm_r <= 1'b0;
-    end else begin
-        if (servo_cnt >= 20'd999_999) begin
-            servo_cnt <= 20'd0;
-        end else begin
-            servo_cnt <= servo_cnt + 20'd1;
-        end
-
-        // 脉冲产生: 开锁 2.0ms, 闭锁 1.0ms
-        if (unlock_all) begin
-            servo_pwm_r <= (servo_cnt < 20'd100_000);
-        end else begin
-            servo_pwm_r <= (servo_cnt < 20'd50_000);
-        end
-    end
-end
-
-assign servo_pwm = servo_pwm_r;
 
 endmodule
 
