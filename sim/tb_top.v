@@ -21,7 +21,6 @@ module tb_top;
     wire       uart_tx;
     reg        uart_rx;
     reg        sw_recovery;
-    wire       servo_pwm;
 
     // 例化顶层模块
     top u_top (
@@ -36,8 +35,7 @@ module tb_top;
         .led        (led),
         .uart_tx    (uart_tx),
         .uart_rx    (uart_rx),
-        .sw_recovery(sw_recovery),
-        .servo_pwm  (servo_pwm)
+        .sw_recovery(sw_recovery)
     );
 
     // 115200 波特率发送任务 (1 bit = 434 个 50MHz 时钟周期)
@@ -115,7 +113,7 @@ module tb_top;
         #(CLK_PERIOD * 50);
         if (led[2] == 1'b1) begin
             $display("[PASS] Challenge-Response PRESENT-MAC verified: remote_unlock asserted (led[2]=1).");
-            $display("[PASS] Servo PWM motor active (Dual-Track hardware actuator operational).");
+            $display("[PASS] Actuator event asserted: led[2]=1 on-board unlock window active.");
         end else begin
             $display("[FAIL] Challenge-Response PRESENT-MAC failed to assert led[2].");
         end
