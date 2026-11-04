@@ -40,12 +40,12 @@ module safe_fsm #(
     output reg  [4:0]  pwd_len,        // 当前输入的密码长度 (日常开锁 0~16, 录入/改密 0~6)
     output reg  [1:0]  err_count,      // 当前累计输错次数 (0~3)
     output reg  [8:0]  lock_countdown, // 阶梯锁定倒计时剩余秒数 (0~300)
-    output reg         unlock_en,      // 开锁使能 (驱动舵机与成功指示)
+    output reg         unlock_en,      // 开锁使能 (驱动开锁与成功指示)
     output reg         duress_alarm,   // 挟持静默告警使能 (预留给 PC 串口，粘滞锁存)
     output reg         duress_trig,    // 反挟持单拍触发脉冲 (替代粘滞电平导致的二次漏发)
     output reg         pwd_err_pulse,  // 真正密码比对失败单周期脉冲 (供 UART 专属上报 'E')
     output reg         lock_timeout_pulse, // 试错锁定结束单拍脉冲 (通知 PC 解锁 'T')
-    output reg         pwd_changed,    // 密码成功更新单周期脉冲 (供语音播报 Track 5)
+    output reg         pwd_changed,    // 密码成功更新单周期脉冲
     
     // 音效触发脉冲输出 (单周期高电平，连接 buzzer_driver)
     output reg         beep_key,       // 按键音触发

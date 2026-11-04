@@ -18,7 +18,7 @@ module door_sensor #(
     input  wire        rst_n,          // 异步复位 (低有效)
     input  wire        tick_1k,        // 1kHz (1ms) 系统基准节拍脉冲
     
-    // 门磁物理传感器输入 (板载 SW1 或外接 GPS-23 干簧管)
+    // 门磁物理传感器输入 (板载 SW1 模拟输入)
     // 门关严: 磁铁吸合接 GND -> 读 0
     // 门敞开: 磁铁分离, 内部 PULLUP 拉高 -> 读 1
     input  wire        sensor_gpio,    // 物理输入引脚 (引脚: A10, 内部 PULLUP)
